@@ -1,12 +1,14 @@
 cmake_minimum_required(VERSION 3.22)
 
+include(_vscode/init.cmake)
+
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS ON)
 set(CMAKE_CXX_STANDARD 20)
 
 if(NOT CMAKE_BUILD_TYPE)
-    set(CMAKE_BUILD_TYPE "Debug")
+    set(CMAKE_BUILD_TYPE "RelWithDebInfo")
 endif()
 
 set(CMAKE_PROJECT_NAME vbcore_bldc_foc)
@@ -24,12 +26,21 @@ add_executable(${CMAKE_PROJECT_NAME})
 
 add_subdirectory(cmake/stm32cubemx)
 
-target_link_libraries(${CMAKE_PROJECT_NAME}
-    stm32cubemx
-    ${CMAKE_CURRENT_SOURCE_DIR}/Drivers/CMSIS/DSP/Lib/GCC/libarm_cortexM4lf_math.a
+file(GLOB_RECURSE DSP_SRC
+    Drivers/CMSIS/DSP/Source/*.c
 )
 
-target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
+add_library(DSP STATIC ${DSP_SRC})
+target_include_directories(DSP PRIVATE
+    Drivers/CMSIS/Include
+    Drivers/CMSIS/DSP/Include
+)
+
+add_compile_options(${CMAKE_PROJECT_NAME} PRIVATE -Wno-sign-compare -Wno-unused-param)
+
+target_link_libraries(${CMAKE_PROJECT_NAME}
+    stm32cubemx
+    DSP
 )
 
 file(GLOB_RECURSE USER_SOURCES "App/*.cpp")
@@ -51,7 +62,7 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
 
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
     -DARM_MATH_CM4
-    -D__FPU_PRESENT
+    -D__FPU_PRESENT=1U
 )
 
 add_custom_command(

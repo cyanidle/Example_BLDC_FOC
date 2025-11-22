@@ -47,7 +47,7 @@ AS5047P encoder(
 );
 std::unique_ptr<FOC> motor;
 
-[[noreturn]] void app() {
+void app() {
     setup_cordic();
     start_timers();
     start_cyphal();
