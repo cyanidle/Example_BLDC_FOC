@@ -8,6 +8,7 @@
 #include "fdcan.h"
 #include "spi.h"
 #include "cordic.h"
+#include "voltbro/encoders/generic.h"
 
 #include <cyphal/node/node_info_handler.h>
 #include <cyphal/node/registers_handler.hpp>
@@ -36,21 +37,39 @@ void setup_cordic() {
     HAL_IMPORTANT(HAL_CORDIC_Configure(&hcordic, &cordic_config));
 }
 
-AS5047P encoder(
-    GpioPin(
-        SPI1_NSS_GPIO_Port,
-        SPI1_NSS_Pin
-    ),
-    &hspi1,
-    true,
-    1005
-);
+// AS5047P encoder(
+//     GpioPin(
+//         SPI1_NSS_GPIO_Port,
+//         SPI1_NSS_Pin
+//     ),
+//     &hspi1,
+//     true,
+//     1005
+// );
+
+// А желтый(PA6) - Б - зеленый(PA7) - С - синий(PA5)
+
+struct KitaiMotorEncoder : GenericEncoder
+{
+    KitaiMotorEncoder() : GenericEncoder(1000) {
+
+    }
+
+    HAL_StatusTypeDef init() override {
+        return HAL_OK;
+    }
+};
+
+KitaiMotorEncoder encoder;
+
 std::unique_ptr<FOC> motor;
 
 void app() {
     setup_cordic();
     start_timers();
     start_cyphal();
+
+    encoder.init();
 
     while (!eeprom.is_connected()) {
         eeprom.delay();

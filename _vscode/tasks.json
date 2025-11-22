@@ -1,0 +1,16 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "type": "shell",
+            "label": "upload",
+            "command": "python3 ${workspaceFolder}/scripts/program.py ${workspaceFolder}/build/vbcore_bldc_foc.elf",
+            "dependsOn": "build"
+        },
+        {
+            "type": "shell",
+            "label": "build",
+            "command": "cmake --build ${workspaceFolder}/build"
+        }
+    ]
+}
