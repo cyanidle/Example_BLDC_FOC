@@ -18,7 +18,7 @@
             "stopAtEntry": false,
             "stopAtConnect": false,
 
-            //"preLaunchTask": "upload",
+            "preLaunchTask": "upload",
 
             "setupCommands": [
                 {
