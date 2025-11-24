@@ -16,7 +16,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
     }
 }
 
-micros __attribute__((optimize("O0"))) micros_64() {
+micros micros_64() {
     return (micros)(millis_k * 1000u + __HAL_TIM_GetCounter(&htim7));
 }
 

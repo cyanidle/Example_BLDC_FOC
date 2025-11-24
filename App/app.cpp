@@ -6,9 +6,6 @@
 #include "i2c.h"
 #include "adc.h"
 #include "fdcan.h"
-#include "spi.h"
-#include "cordic.h"
-#include "voltbro/encoders/generic.h"
 
 #include <cyphal/node/node_info_handler.h>
 #include <cyphal/node/registers_handler.hpp>
@@ -17,77 +14,62 @@
 #include <uavcan/node/Mode_1_0.h>
 #include <uavcan/si/unit/angle/Scalar_1_0.h>
 #include <uavcan/primitive/scalar/Real32_1_0.h>
+#include <uavcan/primitive/scalar/Natural32_1_0.h>
 
 #include <voltbro/eeprom/eeprom.hpp>
-#include <voltbro/encoders/ASxxxx/AS5047P.hpp>
-#include <voltbro/motors/bldc/foc/foc.h>
+#include <voltbro/encoders/hall_sensor/hall_sensor.h>
+#include <voltbro/motors/bldc/six_step/six_step_controller.h>
+
 
 EEPROM eeprom(&hi2c4);
 
-void setup_cordic() {
-    CORDIC_ConfigTypeDef cordic_config {
-        .Function = CORDIC_FUNCTION_COSINE,
-        .Scale = CORDIC_SCALE_0,
-        .InSize = CORDIC_INSIZE_32BITS,
-        .OutSize = CORDIC_OUTSIZE_32BITS,
-        .NbWrite = CORDIC_NBWRITE_1,
-        .NbRead = CORDIC_NBREAD_2,
-        .Precision = CORDIC_PRECISION_6CYCLES
-    };
-    HAL_IMPORTANT(HAL_CORDIC_Configure(&hcordic, &cordic_config));
+HallSensor hall_sensor(
+    12,
+    false,
+    ENC_1_GPIO_Port,
+    ENC_1_Pin,
+    ENC_2_GPIO_Port,
+    ENC_2_Pin,
+    ENC_3_GPIO_Port,
+    ENC_3_Pin,
+    {
+        HallPhase::PHASE_B,
+        HallPhase::PHASE_C,
+        HallPhase::PHASE_A
+    }
+);
+
+std::unique_ptr<SixStepController> motor;
+
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
+    if (GPIO_Pin == ENC_1_Pin || GPIO_Pin == ENC_2_Pin || GPIO_Pin == ENC_3_Pin) {
+        hall_sensor.handle_hall_channel(GPIO_Pin);
+    }
 }
 
-// AS5047P encoder(
-//     GpioPin(
-//         SPI1_NSS_GPIO_Port,
-//         SPI1_NSS_Pin
-//     ),
-//     &hspi1,
-//     true,
-//     1005
-// );
-
-// А желтый(PA6) - Б - зеленый(PA7) - С - синий(PA5)
-
-struct KitaiMotorEncoder : GenericEncoder
-{
-    KitaiMotorEncoder() : GenericEncoder(1000) {
-
-    }
-
-    HAL_StatusTypeDef init() override {
-        return HAL_OK;
-    }
-};
-
-KitaiMotorEncoder encoder;
-
-std::unique_ptr<FOC> motor;
+static volatile encoder_data enc_val = 0;
+static volatile int enc_rev = 0;
 
 void app() {
-    setup_cordic();
     start_timers();
     start_cyphal();
-
-    encoder.init();
 
     while (!eeprom.is_connected()) {
         eeprom.delay();
     }
     eeprom.delay();
 
-    motor = std::make_unique<FOC>(
-        0.00005f,
-        1.2f,
+    motor = std::make_unique<SixStepController>(
+        0,
         DriveInfo {
             .torque_const = 0.069,  // Nm / A == V / (rad/s)
             .speed_const = 24.42,   // (rad/s) / V
-            .max_current = 1.2,
-            .max_torque = 0.35,
-            .stall_current = 1.2,
+            .max_current = 22,
+            .max_torque = 1,
+            .stall_current = 13,
             .stall_timeout = 3,
             .stall_tolerance = 0.2,
-            .supply_voltage = 20,
+            .supply_voltage = 24,
             .l_pins = {
                 GpioPin(INLA_GPIO_Port, INLA_Pin),
                 GpioPin(INLB_GPIO_Port, INLB_Pin),
@@ -95,39 +77,38 @@ void app() {
             },
             .en_pin = GpioPin(DRV_ENABLE_GPIO_Port, DRV_ENABLE_Pin),
             .common = {
-                .ppairs = 14,
+                .ppairs = 2,
                 .gear_ratio = 1
             }
         },
         &htim1,
         &hadc1,
-        encoder
+        hall_sensor
     );
-    motor->init();
-    motor->start();
+
+    HAL_IMPORTANT(motor->init())
+    HAL_IMPORTANT(motor->start())
 
     set_cyphal_mode(uavcan_node_Mode_1_0_OPERATIONAL);
 
-    motor->set_voltage_point(0);
-
     while(true) {
-        cyphal_loop();
         motor->update();
+        cyphal_loop();
     }
 }
 
+TYPE_ALIAS(Natural32, uavcan_primitive_scalar_Natural32_1_0)
 TYPE_ALIAS(Real32, uavcan_primitive_scalar_Real32_1_0)
-static constexpr CanardPortID ANGLE_PORT = 7000;
+static constexpr CanardPortID ENCODER_PORT = 7100;
 static constexpr CanardPortID VOLTAGE_PORT = 5800;
-
 
 void in_loop_reporting(millis current_t) {
     static millis report_time = 0;
     EACH_N(current_t, report_time, 50, {
-        Real32::Type angle_msg = {};
-        angle_msg.value = motor->get_angle();
-        static CanardTransferID angle_transfer_id = 0;
-        get_interface()->send_msg<Real32>(&angle_msg, ANGLE_PORT, &angle_transfer_id);
+        Natural32::Type enc_msg = {};
+        enc_msg.value = hall_sensor.get_value();
+        static CanardTransferID enc_transfer_id = 0;
+        get_interface()->send_msg<Natural32>(&enc_msg, ENCODER_PORT, &enc_transfer_id);
     })
 }
 
@@ -158,7 +139,7 @@ void setup_subscriptions() {
     voltage_sub.create(cyphal_interface, VOLTAGE_PORT + node_id);
     node_info_reader.create(
         cyphal_interface,
-        "org.voltbro.bldc_foc",
+        "org.voltbro.bldc_6step_example",
         uavcan_node_Version_1_0{1, 0},
         uavcan_node_Version_1_0{1, 0},
         uavcan_node_Version_1_0{1, 0},

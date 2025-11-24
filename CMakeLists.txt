@@ -11,18 +11,14 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "Debug")
 endif()
 
-set(CMAKE_PROJECT_NAME vbcore_bldc_foc)
-
 include("cmake/gcc-arm-none-eabi.cmake")
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS TRUE)
 
-enable_language(C ASM)
-
-project(${CMAKE_PROJECT_NAME})
+project(vbcore C CXX ASM)
 message("Build type: " ${CMAKE_BUILD_TYPE})
 
-add_executable(${CMAKE_PROJECT_NAME})
+add_executable(vbcore)
 
 add_subdirectory(cmake/stm32cubemx)
 
@@ -30,15 +26,15 @@ file(GLOB_RECURSE DSP_SRC
     Drivers/CMSIS/DSP/Source/*.c
 )
 
+add_compile_options(-Wno-sign-compare -Wno-unused-parameter -Wno-ignored-qualifiers)
+
 add_library(DSP STATIC ${DSP_SRC})
 target_include_directories(DSP PRIVATE
     Drivers/CMSIS/Include
     Drivers/CMSIS/DSP/Include
 )
 
-add_compile_options(${CMAKE_PROJECT_NAME} PRIVATE -Wno-sign-compare -Wno-unused-param)
-
-target_link_libraries(${CMAKE_PROJECT_NAME}
+target_link_libraries(vbcore PRIVATE
     stm32cubemx
     DSP
 )
@@ -46,13 +42,17 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
 file(GLOB_RECURSE USER_SOURCES "App/*.cpp")
 file(GLOB_RECURSE LIBCXXCANARD_SOURCES "Drivers/libcxxcanard/cyphal/*.cpp" "Drivers/libcxxcanard/libs/*.c")
 file(GLOB_RECURSE LIBVOLTBRO_SOURCES "Drivers/libvoltbro/*.cpp" "Drivers/libvoltbro/*.c")
-target_sources(${CMAKE_PROJECT_NAME} PRIVATE
+target_sources(vbcore PRIVATE
     ${USER_SOURCES}
     ${LIBVOLTBRO_SOURCES}
     ${LIBCXXCANARD_SOURCES}
 )
 
-target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
+target_compile_options(vbcore PRIVATE
+    $<$<COMPILE_LANGUAGE:CXX>:-Wno-reorder>
+)
+
+target_include_directories(vbcore PRIVATE
     App
     Drivers/libcxxcanard
     Drivers/libcxxcanard/libs
@@ -60,13 +60,13 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     Drivers/CMSIS/DSP/Include
 )
 
-target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
+target_compile_definitions(vbcore PRIVATE
     -DARM_MATH_CM4
     -D__FPU_PRESENT=1U
 )
 
 add_custom_command(
     POST_BUILD
-    TARGET ${CMAKE_PROJECT_NAME}
-    COMMAND arm-none-eabi-objcopy -O ihex ${CMAKE_PROJECT_NAME}.elf ${CMAKE_PROJECT_NAME}.hex
+    TARGET vbcore
+    COMMAND arm-none-eabi-objcopy -O ihex vbcore.elf vbcore.hex
 )
