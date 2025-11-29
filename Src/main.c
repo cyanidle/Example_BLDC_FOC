@@ -101,7 +101,7 @@ int main(void)
   MX_TIM2_Init();
   MX_ADC1_Init();
   MX_CORDIC_Init();
-  MX_SPI1_Init();
+  MX_SPI3_Init();
   /* USER CODE BEGIN 2 */
   app();
   /* USER CODE END 2 */

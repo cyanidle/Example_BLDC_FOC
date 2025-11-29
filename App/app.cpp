@@ -28,10 +28,10 @@ HallSensor hall_sensor(
     false,
     ENC_1_GPIO_Port,
     ENC_1_Pin,
-    ENC_2_GPIO_Port,
-    ENC_2_Pin,
     ENC_3_GPIO_Port,
     ENC_3_Pin,
+    ENC_2_GPIO_Port,
+    ENC_2_Pin,
     {
         HallPhase::PHASE_B,
         HallPhase::PHASE_C,
@@ -49,8 +49,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
 
 static volatile encoder_data enc_val = 0;
 static volatile int enc_rev = 0;
-
-void app() {
+[[noreturn]] void app() {
     start_timers();
     start_cyphal();
 

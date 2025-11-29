@@ -6,7 +6,7 @@ static uint32_t millis_k __attribute__ ((__aligned__(4))) = 0;
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
     if (htim->Instance == TIM2) {
-        HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
+        HAL_GPIO_TogglePin(LED2_GPIO_Port, LED2_Pin);
     }
     else if (htim->Instance == TIM7) {
         millis_k += 1;
@@ -16,7 +16,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
     }
 }
 
-micros micros_64() {
+micros __attribute__((optimize("O0"))) micros_64() {
     return (micros)(millis_k * 1000u + __HAL_TIM_GetCounter(&htim7));
 }
 
