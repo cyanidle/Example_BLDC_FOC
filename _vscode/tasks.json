@@ -4,7 +4,7 @@
         {
             "type": "shell",
             "label": "upload",
-            "command": "python3 ${workspaceFolder}/scripts/program.py ${workspaceFolder}/build/vbcore_bldc_foc.elf",
+            "command": "python3 ${workspaceFolder}/scripts/program.py ${workspaceFolder}/build/vbcore.elf",
             "dependsOn": "build"
         },
         {

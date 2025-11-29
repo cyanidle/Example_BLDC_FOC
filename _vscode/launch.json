@@ -9,7 +9,7 @@
             "type": "cppdbg",
             "request": "launch",
             "cwd": "${workspaceFolder}",
-            "program": "${workspaceFolder}/build/vbcore_bldc_foc.elf",
+            "program": "${workspaceFolder}/build/vbcore.elf",
             "MIMode": "gdb",
 
             "miDebuggerServerAddress": "127.0.0.1:3333",
