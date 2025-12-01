@@ -103,11 +103,12 @@ static constexpr CanardPortID VOLTAGE_PORT = 5800;
 
 void in_loop_reporting(millis current_t) {
     static millis report_time = 0;
+    const auto node_id = get_node_id();
     EACH_N(current_t, report_time, 50, {
         Natural32::Type enc_msg = {};
         enc_msg.value = hall_sensor.get_value();
         static CanardTransferID enc_transfer_id = 0;
-        get_interface()->send_msg<Natural32>(&enc_msg, ENCODER_PORT, &enc_transfer_id);
+        get_interface()->send_msg<Natural32>(&enc_msg, ENCODER_PORT + node_id, &enc_transfer_id);
     })
 }
 
