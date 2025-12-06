@@ -69,4 +69,5 @@ add_custom_command(
     POST_BUILD
     TARGET vbcore
     COMMAND arm-none-eabi-objcopy -O ihex vbcore.elf vbcore.hex
+    COMMAND arm-none-eabi-objcopy -O binary vbcore.elf vbcore.bin
 )
