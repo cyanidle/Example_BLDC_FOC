@@ -107,9 +107,10 @@ void cyphal_loop() {
         in_loop_reporting(current_t);
 
         static micros heartbeat_time = 0;
-        EACH_N(current_t, heartbeat_time, 1000, {
+        if ((current_t - heartbeat_time) >= (1000)) {
             heartbeat();
-        })
+            heartbeat_time = current_t;
+        }
     }
 
     if (delay_cyphal_until_millis != 0 &&
