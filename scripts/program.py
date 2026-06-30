@@ -18,6 +18,8 @@ async def main():
     resp = await asyncio.wait_for(reader.readuntil(b'wrote'), timeout=50.0)
     writer.write("reset halt\n")
     await asyncio.sleep(0.5)
+    writer.write("reset run\n")
+    await asyncio.sleep(0.5)
     print(resp.decode(), file=sys.stderr)
 
 asyncio.run(main())
