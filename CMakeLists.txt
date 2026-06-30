@@ -63,6 +63,8 @@ target_include_directories(vbcore PRIVATE
 target_compile_definitions(vbcore PRIVATE
     -DARM_MATH_CM4
     -D__FPU_PRESENT=1U
+    -DSTM32_G
+    -DSTM32G
 )
 
 add_custom_command(

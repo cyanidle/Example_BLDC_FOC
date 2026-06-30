@@ -15,25 +15,31 @@
 #include <uavcan/si/unit/angle/Scalar_1_0.h>
 #include <uavcan/primitive/scalar/Real32_1_0.h>
 #include <uavcan/primitive/scalar/Natural32_1_0.h>
-#include <uavcan/primitive/array/Real32_1_0.h>
+#include <uavcan/primitive/array/Integer32_1_0.h>
 
 #include <voltbro/eeprom/eeprom.hpp>
 #include <voltbro/encoders/hall_sensor/hall_sensor.h>
+#include <voltbro/devices/inverter.hpp>
 #include <voltbro/motors/bldc/six_step/six_step_controller.h>
 #include <voltbro/motors/bldc/six_step/six_step_speed_controller.h>
 
 
 EEPROM eeprom(&hi2c4);
 
+// Hall channel order is (ENC_1, ENC_3, ENC_2): get_encoder_step() weights the
+// three channels by the fixed `sequence` below, so this order is what maps the
+// rotor position to the correct commutation step. Putting the channels in plain
+// 1-2-3 order scrambles commutation (the motor won't drive) while leaving the
+// velocity estimate intact — do not "tidy" it.
 HallSensor hall_sensor(
     12,
     false,
     ENC_1_GPIO_Port,
     ENC_1_Pin,
-    ENC_2_GPIO_Port,
-    ENC_2_Pin,
     ENC_3_GPIO_Port,
     ENC_3_Pin,
+    ENC_2_GPIO_Port,
+    ENC_2_Pin,
     {
         HallPhase::PHASE_B,
         HallPhase::PHASE_C,
@@ -41,8 +47,41 @@ HallSensor hall_sensor(
     }
 );
 
+// Current-sense / bus-voltage front end. The six-step controller reads bus
+// voltage from here to scale its PWM, so it must be constructed and handed to
+// the motor (motor->init() starts its ADC+DMA).
+Inverter inverter(&hadc1);
+DriveRuntimeConfig drive_runtime_config{};
+
+DriveInfo drive_info {
+    .torque_const = 0.069f,  // Nm / A == V / (rad/s)
+    .max_current = 22,
+    .max_torque = 1,
+    .stall_current = 13,
+    .stall_timeout = 3,
+    .stall_tolerance = 0.2f,
+    .calibration_voltage = 0.0f,
+    .l_pins = std::array<GpioPin, 3>{
+        GpioPin(INLA_GPIO_Port, INLA_Pin),
+        GpioPin(INLB_GPIO_Port, INLB_Pin),
+        GpioPin(INLC_GPIO_Port, INLC_Pin)
+    },
+    .en_pin = GpioPin(DRV_ENABLE_GPIO_Port, DRV_ENABLE_Pin),
+    .common = {
+        .ppairs = 2,
+        .gear_ratio = 1
+    }
+};
+
 std::unique_ptr<SixStepController> motor;
 std::unique_ptr<SixStepSpeedController> speed_controller;
+
+// Active control mode. DIRECT_VOLTAGE feeds open-loop voltage straight to the
+// motor (bring-up / tuning); SPEED runs the velocity PID. A command on either
+// topic switches the mode, so the two never fight over the voltage set-point.
+// A single byte: reads/writes are inherently atomic on Cortex-M4.
+enum class ControlMode : uint8_t { DIRECT_VOLTAGE, SPEED };
+static volatile ControlMode control_mode = ControlMode::DIRECT_VOLTAGE;
 
 /* ---- Runtime, CAN-tunable parameters (see ConfigSub / CONFIG_PORT below) ----
  * These have safe defaults so the node runs before any config message arrives;
@@ -55,11 +94,16 @@ static float wheel_radius = 0.05f;  // m (default: 0.1 m wheel diameter)
 static PIDConfig make_default_pid_config() {
     return PIDConfig {
         .multiplier = 1.0f,
-        .p_gain = 0.5f,
-        .i_gain = 0.1f,
-        .d_gain = 0.0f,
-        .integral_error_lim = 10.0f,  // V
-        .tolerance = 0.05f            // rad/s
+        .kp = 0.5f,
+        .ki = 0.1f,
+        .kd = 0.0f,
+        .integral_error_lim = 10.0f,  // cap on accumulated error (rad/s * s)
+        .tolerance = 0.05f,           // rad/s
+        // Output is a voltage set-point: clamp it to the supply rail. Leaving
+        // these at the +/-FLT_MAX default also disables the regulator's
+        // saturation anti-windup (its "raw < max_output" test never trips).
+        .max_output = 24.0f,          // V
+        .min_output = -24.0f          // V
     };
 }
 static PIDConfig velocity_pid_config = make_default_pid_config();
@@ -76,35 +120,13 @@ static volatile int enc_rev = 0;
     start_timers();
     start_cyphal();
 
-    while (!eeprom.is_connected()) {
-        eeprom.delay();
-    }
-    eeprom.delay();
+    eeprom.wait_until_available();
 
     motor = std::make_unique<SixStepController>(
-        0,
-        DriveInfo {
-            .torque_const = 0.069,  // Nm / A == V / (rad/s)
-            .speed_const = 24.42,   // (rad/s) / V
-            .max_current = 22,
-            .max_torque = 1,
-            .stall_current = 13,
-            .stall_timeout = 3,
-            .stall_tolerance = 0.2,
-            .supply_voltage = 24,
-            .l_pins = {
-                GpioPin(INLA_GPIO_Port, INLA_Pin),
-                GpioPin(INLB_GPIO_Port, INLB_Pin),
-                GpioPin(INLC_GPIO_Port, INLC_Pin)
-            },
-            .en_pin = GpioPin(DRV_ENABLE_GPIO_Port, DRV_ENABLE_Pin),
-            .common = {
-                .ppairs = 2,
-                .gear_ratio = 1
-            }
-        },
+        drive_runtime_config,
+        drive_info,
         &htim1,
-        &hadc1,
+        inverter,
         hall_sensor
     );
 
@@ -124,7 +146,9 @@ static volatile int enc_rev = 0;
     while(true) {
         micros now = micros_64();
         EACH_N_MICROS(now, pid_time, PID_PERIOD_US, {
-            //speed_controller->update((float)PID_PERIOD_US * 1e-6f);
+            if (control_mode == ControlMode::SPEED) {
+                speed_controller->update((float)PID_PERIOD_US * 1e-6f);
+            }
         })
 
         motor->update();
@@ -135,36 +159,52 @@ static volatile int enc_rev = 0;
 
 TYPE_ALIAS(Natural32, uavcan_primitive_scalar_Natural32_1_0)
 TYPE_ALIAS(Real32, uavcan_primitive_scalar_Real32_1_0)
-TYPE_ALIAS(Real32Array, uavcan_primitive_array_Real32_1_0)
+TYPE_ALIAS(Int32Array, uavcan_primitive_array_Integer32_1_0)
 static constexpr CanardPortID ENCODER_PORT = 7100;
 static constexpr CanardPortID VELOCITY_PORT = 7200;   // shaft angular velocity, rad/s
 static constexpr CanardPortID LINEAR_SPEED_PORT = 7300;  // wheel linear speed, m/s
 static constexpr CanardPortID SPEED_CMD_PORT = 4000;  // target wheel speed command, m/s
-static constexpr CanardPortID DIRECT_SPEED_CMD_PORT = 4050;  // target shaft speed command, rad/s
-static constexpr CanardPortID CONFIG_PORT = 4100;     // runtime config array (see below)
+static constexpr CanardPortID DIRECT_SPEED_CMD_PORT = 4050;  // open-loop voltage command, V
+static constexpr CanardPortID CONFIG_PORT = 4100;     // runtime config (see ConfigSub)
 
-/* ---- Config topic layout: uavcan.primitive.array.Real32 on CONFIG_PORT ----
- * The wheel master publishes an array of floats; each node applies the values
- * below. Trailing entries may be omitted and keep their previous value, so the
- * array can grow without breaking older nodes.
- *
- *   index  name                 unit          meaning
- *   [0]    wheel_diameter       m             drive-wheel diameter (rad/s <-> m/s)
- *   [1]    velocity_pid_p       V/(rad/s)     proportional gain
- *   [2]    velocity_pid_i       V/(rad/s * s) integral gain
- *   [3]    velocity_pid_d       V/(rad/s / s) derivative gain
- *   [4]    velocity_pid_i_limit V             integral anti-windup clamp
- *   [5]    velocity_pid_tol     rad/s         error tolerance
- */
-enum ConfigIndex : size_t {
-    CFG_WHEEL_DIAMETER = 0,
-    CFG_PID_P,
-    CFG_PID_I,
-    CFG_PID_D,
-    CFG_PID_I_LIMIT,
-    CFG_PID_TOLERANCE,
-    CFG_COUNT
+/* ---- Config topic: uavcan.primitive.array.Integer32 on CONFIG_PORT ----
+ * Exactly three elements: { id, numerator, denominator }. The node applies
+ *     value = numerator / denominator
+ * to the parameter selected by `id`. Sending one rational at a time lets any
+ * float be set at any moment without a fixed-layout array.
+ * Keep this enum in sync with config_defs.lua in the repo root. */
+enum ConfigId : int32_t {
+    CFG_WHEEL_DIAMETER = 0,  // m,            drive-wheel diameter (rad/s <-> m/s)
+    CFG_PID_KP        = 1,   // V/(rad/s),    proportional gain
+    CFG_PID_KI        = 2,   // V/(rad/s * s),integral gain
+    CFG_PID_KD        = 3,   // V/(rad/s / s),derivative gain
+    CFG_PID_I_LIMIT   = 4,   // V,            integral anti-windup clamp
+    CFG_PID_TOLERANCE = 5,   // rad/s,        error tolerance
 };
+
+// Apply a single decoded config value to the live parameters.
+static void apply_config_value(int32_t id, float value) {
+    if (id == CFG_WHEEL_DIAMETER) {
+        if (value > 0.0f) {
+            wheel_radius = value * 0.5f;
+        }
+        return;
+    }
+
+    PIDConfig pid = velocity_pid_config;
+    switch (id) {
+        case CFG_PID_KP:        pid.kp = value; break;
+        case CFG_PID_KI:        pid.ki = value; break;
+        case CFG_PID_KD:        pid.kd = value; break;
+        case CFG_PID_I_LIMIT:   pid.integral_error_lim = value; break;
+        case CFG_PID_TOLERANCE: pid.tolerance = value; break;
+        default: return;  // unknown id: ignore
+    }
+    velocity_pid_config = pid;
+    if (speed_controller) {
+        speed_controller->set_pid_config(PIDConfig(velocity_pid_config));
+    }
+}
 
 void in_loop_reporting(millis current_t) {
     static millis report_time = 0;
@@ -192,8 +232,8 @@ void in_loop_reporting(millis current_t) {
     }
 }
 
-// Target wheel speed command, m/s. Converted to a shaft angular-velocity
-// set-point for the velocity PID using the configured wheel radius.
+// Target wheel speed command, m/s. Switches into closed-loop SPEED mode and
+// converts to a shaft angular-velocity set-point using the configured radius.
 class SpeedCommandSub: public AbstractSubscription<Real32> {
 public:
     SpeedCommandSub(InterfacePtr interface, CanardPortID port_id): AbstractSubscription<Real32>(interface, port_id) {};
@@ -203,43 +243,37 @@ public:
         }
         const float target_omega = msg.value / wheel_radius;  // m/s -> rad/s
         speed_controller->set_target_velocity(target_omega);
+        control_mode = ControlMode::SPEED;
     }
 };
 
-// Direct shaft speed command, rad/s. Fed straight to the velocity PID set-point,
-// bypassing the wheel-radius conversion (handy for bring-up / tuning).
+// Direct open-loop voltage command, V. Switches into DIRECT_VOLTAGE mode (the
+// velocity PID stops) and feeds the voltage straight to the motor — for
+// bring-up / tuning.
 class DirectSpeedCommandSub: public AbstractSubscription<Real32> {
 public:
     DirectSpeedCommandSub(InterfacePtr interface, CanardPortID port_id): AbstractSubscription<Real32>(interface, port_id) {};
     void handler(const Real32::Type& msg, CanardRxTransfer* _) override {
+        control_mode = ControlMode::DIRECT_VOLTAGE;
         motor->set_voltage_point(msg.value);
     }
 };
 
-// Runtime configuration: wheel diameter + velocity-PID gains (see layout above).
-class ConfigSub: public AbstractSubscription<Real32Array> {
+// Runtime configuration: one { id, numerator, denominator } triple per message.
+class ConfigSub: public AbstractSubscription<Int32Array> {
 public:
-    ConfigSub(InterfacePtr interface, CanardPortID port_id): AbstractSubscription<Real32Array>(interface, port_id) {};
-    void handler(const Real32Array::Type& msg, CanardRxTransfer* _) override {
-        const size_t n = msg.value.count;
-        const float* v = msg.value.elements;
-
-        if (n > CFG_WHEEL_DIAMETER && v[CFG_WHEEL_DIAMETER] > 0.0f) {
-            wheel_radius = v[CFG_WHEEL_DIAMETER] * 0.5f;
+    ConfigSub(InterfacePtr interface, CanardPortID port_id): AbstractSubscription<Int32Array>(interface, port_id) {};
+    void handler(const Int32Array::Type& msg, CanardRxTransfer* _) override {
+        if (msg.value.count < 3) {
+            return;
         }
-
-        // Start from the current gains so a short array only overrides what it carries.
-        PIDConfig pid = velocity_pid_config;
-        if (n > CFG_PID_P)         pid.p_gain = v[CFG_PID_P];
-        if (n > CFG_PID_I)         pid.i_gain = v[CFG_PID_I];
-        if (n > CFG_PID_D)         pid.d_gain = v[CFG_PID_D];
-        if (n > CFG_PID_I_LIMIT)   pid.integral_error_lim = v[CFG_PID_I_LIMIT];
-        if (n > CFG_PID_TOLERANCE) pid.tolerance = v[CFG_PID_TOLERANCE];
-        velocity_pid_config = pid;
-
-        if (speed_controller) {
-            speed_controller->set_pid_config(PIDConfig(pid));
+        const int32_t id          = msg.value.elements[0];
+        const int32_t numerator   = msg.value.elements[1];
+        const int32_t denominator = msg.value.elements[2];
+        if (denominator == 0) {
+            return;
         }
+        apply_config_value(id, (float)numerator / (float)denominator);
     }
 };
 
@@ -282,15 +316,14 @@ void setup_subscriptions() {
                     uavcan_register_Value_1_0& v_out,
                     RegisterAccessResponse::Type& response
                 ){
-                    static bool value = false;
+                    // Only a write (bit value, tag 3) changes the motor state.
+                    // A read carries an empty value; it must just report the
+                    // current state — calling set_state() here would disable the
+                    // motor on every register read/list and make it ignore all
+                    // setpoint commands.
                     if (v_in._tag_ == 3) {
-                        value = v_in.bit.value.bitpacked[0] == 1;
+                        motor->set_state(v_in.bit.value.bitpacked[0] == 1);
                     }
-                    else {
-                        // TODO: report error
-                    }
-
-                    motor->set_state(value);
 
                     response.persistent = true;
                     response._mutable = true;

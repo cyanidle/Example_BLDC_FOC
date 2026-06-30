@@ -7,11 +7,13 @@
 #include <cyphal/providers/G4CAN.h>
 #include <cyphal/allocators/o1/o1_allocator.h>
 
-#include <voltbro/config/config.hpp>
-
 #include <uavcan/diagnostic/Record_1_1.h>
 #include <uavcan/node/Heartbeat_1_0.h>
 #include <uavcan/node/Health_1_0.h>
+
+#include <voltbro/config/config_from_pins.hpp>
+#include <voltbro/utils.hpp>
+
 #include <uavcan/node/Mode_1_0.h>
 
 
