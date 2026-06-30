@@ -99,6 +99,7 @@ static volatile int enc_rev = 0;
 TYPE_ALIAS(Natural32, uavcan_primitive_scalar_Natural32_1_0)
 TYPE_ALIAS(Real32, uavcan_primitive_scalar_Real32_1_0)
 static constexpr CanardPortID ENCODER_PORT = 7100;
+static constexpr CanardPortID VELOCITY_PORT = 7200;
 static constexpr CanardPortID VOLTAGE_PORT = 5800;
 
 void in_loop_reporting(millis current_t) {
@@ -110,6 +111,11 @@ void in_loop_reporting(millis current_t) {
         static CanardTransferID enc_transfer_id = 0;
         get_interface()->send_msg<Natural32>(&enc_msg, ENCODER_PORT + node_id, &enc_transfer_id);
         report_time = current_t;
+
+        Real32::Type velocity_msg = {};
+        velocity_msg.value = motor->get_velocity();  // angular velocity, rad/s
+        static CanardTransferID velocity_transfer_id = 0;
+        get_interface()->send_msg<Real32>(&velocity_msg, VELOCITY_PORT + node_id, &velocity_transfer_id);
     }
 }
 
