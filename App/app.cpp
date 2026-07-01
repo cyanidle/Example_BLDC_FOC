@@ -36,10 +36,10 @@ HallSensor hall_sensor(
     false,
     ENC_1_GPIO_Port,
     ENC_1_Pin,
-    ENC_3_GPIO_Port,
-    ENC_3_Pin,
     ENC_2_GPIO_Port,
     ENC_2_Pin,
+    ENC_3_GPIO_Port,
+    ENC_3_Pin,
     {
         HallPhase::PHASE_B,
         HallPhase::PHASE_C,
@@ -137,6 +137,8 @@ static volatile int enc_rev = 0;
         *motor,
         PIDConfig(velocity_pid_config)
     );
+    // Regulate linear wheel speed (m/s): scale the angular feedback by radius.
+    speed_controller->set_feedback_scale(wheel_radius);
 
     set_cyphal_mode(uavcan_node_Mode_1_0_OPERATIONAL);
 
@@ -187,6 +189,10 @@ static void apply_config_value(int32_t id, float value) {
     if (id == CFG_WHEEL_DIAMETER) {
         if (value > 0.0f) {
             wheel_radius = value * 0.5f;
+            // Keep the linear-speed PID feedback scale in sync with the radius.
+            if (speed_controller) {
+                speed_controller->set_feedback_scale(wheel_radius);
+            }
         }
         return;
     }
@@ -232,17 +238,16 @@ void in_loop_reporting(millis current_t) {
     }
 }
 
-// Target wheel speed command, m/s. Switches into closed-loop SPEED mode and
-// converts to a shaft angular-velocity set-point using the configured radius.
+// Target wheel speed command, m/s. Switches into closed-loop SPEED mode; the
+// controller regulates linear wheel speed directly (feedback scaled by radius).
 class SpeedCommandSub: public AbstractSubscription<Real32> {
 public:
     SpeedCommandSub(InterfacePtr interface, CanardPortID port_id): AbstractSubscription<Real32>(interface, port_id) {};
     void handler(const Real32::Type& msg, CanardRxTransfer* _) override {
-        if (!speed_controller || wheel_radius <= 0.0f) {
+        if (!speed_controller) {
             return;
         }
-        const float target_omega = msg.value / wheel_radius;  // m/s -> rad/s
-        speed_controller->set_target_velocity(target_omega);
+        speed_controller->set_target_velocity(msg.value);  // m/s
         control_mode = ControlMode::SPEED;
     }
 };
@@ -336,44 +341,26 @@ void setup_subscriptions() {
         cyphal_interface
     );
 
+    // One extended-ID acceptance filter per RX subscription. Cyphal uses
+    // extended IDs and the global filter rejects everything unmatched, so a
+    // missing slot = a silently dead topic. Publishers are TX-only and need no
+    // filter. Keep this list <= hfdcan1.Init.ExtFiltersNbr (see fdcan.c; the
+    // G4 hardware max is 8).
+    const CanardFilter rx_filters[] = {
+        node_info_reader->make_filter(node_id),
+        registers_handler->make_filter(node_id),
+        direct_speed_cmd_sub->make_filter(node_id),
+        speed_cmd_sub->make_filter(node_id),
+        config_sub->make_filter(node_id),
+    };
+    static_assert(
+        sizeof(rx_filters) / sizeof(rx_filters[0]) <= 8,
+        "more RX subscriptions than FDCAN extended filter slots (max 8); "
+        "raise hfdcan1.Init.ExtFiltersNbr or drop a subscription"
+    );
+
     static FDCAN_FilterTypeDef sFilterConfig;
-    uint32_t filter_index = 0;
-    HAL_IMPORTANT(apply_filter(
-        filter_index,
-        &hfdcan1,
-        &sFilterConfig,
-        node_info_reader->make_filter(node_id)
-    ))
-
-    filter_index += 1;
-    HAL_IMPORTANT(apply_filter(
-        filter_index,
-        &hfdcan1,
-        &sFilterConfig,
-        registers_handler->make_filter(node_id)
-    ))
-
-    filter_index += 1;
-    HAL_IMPORTANT(apply_filter(
-        filter_index,
-        &hfdcan1,
-        &sFilterConfig,
-        speed_cmd_sub->make_filter(node_id)
-    ))
-
-    filter_index += 1;
-    HAL_IMPORTANT(apply_filter(
-        filter_index,
-        &hfdcan1,
-        &sFilterConfig,
-        direct_speed_cmd_sub->make_filter(node_id)
-    ))
-
-    filter_index += 1;
-    HAL_IMPORTANT(apply_filter(
-        filter_index,
-        &hfdcan1,
-        &sFilterConfig,
-        config_sub->make_filter(node_id)
-    ))
+    for (uint32_t i = 0; i < sizeof(rx_filters) / sizeof(rx_filters[0]); ++i) {
+        HAL_IMPORTANT(apply_filter(i, &hfdcan1, &sFilterConfig, rx_filters[i]))
+    }
 }
