@@ -93,12 +93,10 @@ static float wheel_radius = 0.05f;  // m (default: 0.1 m wheel diameter)
 // Conservative placeholders: tune in the field via the config topic.
 static PIDConfig make_default_pid_config() {
     return PIDConfig {
-        .multiplier = 1.0f,
         .kp = 0.5f,
         .ki = 0.1f,
         .kd = 0.0f,
         .integral_error_lim = 10.0f,  // cap on accumulated error (rad/s * s)
-        .tolerance = 0.05f,           // rad/s
         // Output is a voltage set-point: clamp it to the supply rail. Leaving
         // these at the +/-FLT_MAX default also disables the regulator's
         // saturation anti-windup (its "raw < max_output" test never trips).
@@ -143,10 +141,11 @@ static volatile int enc_rev = 0;
     set_cyphal_mode(uavcan_node_Mode_1_0_OPERATIONAL);
 
     // Velocity PID is run at a fixed cadence so its dt is constant and stable.
-    constexpr micros PID_PERIOD_US = 1000;  // 1 kHz
+    constexpr micros PID_PERIOD_US = 5000;  // 200 Hz
     static micros pid_time = 0;
     while(true) {
         micros now = micros_64();
+
         EACH_N_MICROS(now, pid_time, PID_PERIOD_US, {
             if (control_mode == ControlMode::SPEED) {
                 speed_controller->update((float)PID_PERIOD_US * 1e-6f);
@@ -181,7 +180,6 @@ enum ConfigId : int32_t {
     CFG_PID_KI        = 2,   // V/(rad/s * s),integral gain
     CFG_PID_KD        = 3,   // V/(rad/s / s),derivative gain
     CFG_PID_I_LIMIT   = 4,   // V,            integral anti-windup clamp
-    CFG_PID_TOLERANCE = 5,   // rad/s,        error tolerance
 };
 
 // Apply a single decoded config value to the live parameters.
@@ -203,7 +201,6 @@ static void apply_config_value(int32_t id, float value) {
         case CFG_PID_KI:        pid.ki = value; break;
         case CFG_PID_KD:        pid.kd = value; break;
         case CFG_PID_I_LIMIT:   pid.integral_error_lim = value; break;
-        case CFG_PID_TOLERANCE: pid.tolerance = value; break;
         default: return;  // unknown id: ignore
     }
     velocity_pid_config = pid;
