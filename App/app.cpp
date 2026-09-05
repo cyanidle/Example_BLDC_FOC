@@ -122,7 +122,14 @@ static volatile int enc_rev = 0;
     // cached state is meaningless until we re-sample the pins here.
     hall_sensor.resync();
 
-    eeprom.wait_until_available();
+    // The EEPROM is only probed for presence; nothing is read from it later, so
+    // a missing/stuck EEPROM must not block motor initialization forever.
+    {
+        const millis eeprom_wait_start = millis_32();
+        while (!eeprom.is_connected() && (millis_32() - eeprom_wait_start) < 500) {
+            HAL_Delay(2);
+        }
+    }
 
     motor = std::make_unique<SixStepController>(
         drive_runtime_config,
