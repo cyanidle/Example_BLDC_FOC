@@ -92,7 +92,14 @@ void MX_ADC1_Init(void)
 
   /** Configure Regular Channel
   */
+  /* USER CODE BEGIN ADC1_Init_Ranks */
+  /* Ranks must sample distinct channels: rank 1 = bus voltage divider (IN6),
+     ranks 2..4 = phase current sense (IN7..IN9). The previous config left
+     sConfig.Channel at IN6 for every rank, so all four DMA slots read the
+     battery divider and the phase currents were garbage. */
+  /* USER CODE END ADC1_Init_Ranks */
   sConfig.Rank = ADC_REGULAR_RANK_2;
+  sConfig.Channel = ADC_CHANNEL_7;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -101,6 +108,7 @@ void MX_ADC1_Init(void)
   /** Configure Regular Channel
   */
   sConfig.Rank = ADC_REGULAR_RANK_3;
+  sConfig.Channel = ADC_CHANNEL_8;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -109,6 +117,7 @@ void MX_ADC1_Init(void)
   /** Configure Regular Channel
   */
   sConfig.Rank = ADC_REGULAR_RANK_4;
+  sConfig.Channel = ADC_CHANNEL_9;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
