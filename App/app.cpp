@@ -12,10 +12,11 @@
 #include <cyphal/providers/G4CAN.h>
 
 #include <uavcan/node/Mode_1_0.h>
+#include <uavcan/node/Health_1_0.h>
 #include <uavcan/si/unit/angle/Scalar_1_0.h>
-#include <uavcan/primitive/scalar/Real32_1_0.h>
-#include <uavcan/primitive/scalar/Natural32_1_0.h>
-#include <uavcan/primitive/array/Integer32_1_0.h>
+#include <uavcan/primitive/scalar/Real32_1_0.hpp>
+#include <uavcan/primitive/scalar/Natural32_1_0.hpp>
+#include <uavcan/primitive/array/Integer32_1_0.hpp>
 
 #include <voltbro/eeprom/eeprom.hpp>
 #include <voltbro/encoders/hall_sensor/hall_sensor.h>
@@ -158,9 +159,11 @@ static volatile int enc_rev = 0;
     }
 }
 
-TYPE_ALIAS(Natural32, uavcan_primitive_scalar_Natural32_1_0)
-TYPE_ALIAS(Real32, uavcan_primitive_scalar_Real32_1_0)
-TYPE_ALIAS(Int32Array, uavcan_primitive_array_Integer32_1_0)
+// libcxxcanard no longer provides TYPE_ALIAS: subscriptions take the raw DSDL
+// types directly (AbstractSubscription<uavcan_primitive_scalar_Real32_1_0>).
+using Natural32 = uavcan_primitive_scalar_Natural32_1_0;
+using Real32 = uavcan_primitive_scalar_Real32_1_0;
+using Int32Array = uavcan_primitive_array_Integer32_1_0;
 static constexpr CanardPortID ENCODER_PORT = 7100;
 static constexpr CanardPortID VELOCITY_PORT = 7200;   // shaft angular velocity, rad/s
 static constexpr CanardPortID LINEAR_SPEED_PORT = 7300;  // wheel linear speed, m/s
@@ -213,20 +216,20 @@ void in_loop_reporting(millis current_t) {
     static millis report_time = 0;
     static const auto node_id = get_node_id();
     if ((current_t - report_time) >= (50)) {
-        Natural32 ::Type enc_msg = {};
+        Natural32 enc_msg = {};
         enc_msg.value = hall_sensor.get_value();
         static CanardTransferID enc_transfer_id = 0;
         get_interface()->send_msg<Natural32>(&enc_msg, ENCODER_PORT + node_id, &enc_transfer_id);
 
         const float angular_velocity = motor->get_velocity();  // rad/s
 
-        Real32::Type velocity_msg = {};
+        Real32 velocity_msg = {};
         velocity_msg.value = angular_velocity;
         static CanardTransferID velocity_transfer_id = 0;
         get_interface()->send_msg<Real32>(&velocity_msg, VELOCITY_PORT + node_id, &velocity_transfer_id);
 
         // Linear wheel speed from angular velocity and wheel radius: v = w * r.
-        Real32::Type speed_msg = {};
+        Real32 speed_msg = {};
         speed_msg.value = angular_velocity * wheel_radius;  // m/s
         static CanardTransferID speed_transfer_id = 0;
         get_interface()->send_msg<Real32>(&speed_msg, LINEAR_SPEED_PORT + node_id, &speed_transfer_id);
@@ -240,9 +243,14 @@ void in_loop_reporting(millis current_t) {
 class SpeedCommandSub: public AbstractSubscription<Real32> {
 public:
     SpeedCommandSub(InterfacePtr interface, CanardPortID port_id): AbstractSubscription<Real32>(interface, port_id) {};
-    void handler(const Real32::Type& msg, CanardRxTransfer* _) override {
+    void handler(const Real32& msg, CanardRxTransfer* _) override {
         if (!speed_controller) {
             return;
+        }
+        if (control_mode != ControlMode::SPEED) {
+            // Entering SPEED mode: drop any PID integral accumulated under a
+            // previous set-point so it doesn't kick the motor.
+            speed_controller->reset();
         }
         speed_controller->set_target_velocity(msg.value);  // m/s
         control_mode = ControlMode::SPEED;
@@ -255,7 +263,7 @@ public:
 class DirectSpeedCommandSub: public AbstractSubscription<Real32> {
 public:
     DirectSpeedCommandSub(InterfacePtr interface, CanardPortID port_id): AbstractSubscription<Real32>(interface, port_id) {};
-    void handler(const Real32::Type& msg, CanardRxTransfer* _) override {
+    void handler(const Real32& msg, CanardRxTransfer* _) override {
         control_mode = ControlMode::DIRECT_VOLTAGE;
         motor->set_voltage_point(msg.value);
     }
@@ -265,7 +273,7 @@ public:
 class ConfigSub: public AbstractSubscription<Int32Array> {
 public:
     ConfigSub(InterfacePtr interface, CanardPortID port_id): AbstractSubscription<Int32Array>(interface, port_id) {};
-    void handler(const Int32Array::Type& msg, CanardRxTransfer* _) override {
+    void handler(const Int32Array& msg, CanardRxTransfer* _) override {
         if (msg.value.count < 3) {
             return;
         }
@@ -316,7 +324,7 @@ void setup_subscriptions() {
                 [](
                     const uavcan_register_Value_1_0& v_in,
                     uavcan_register_Value_1_0& v_out,
-                    RegisterAccessResponse::Type& response
+                    RegisterAccessResponse& response
                 ){
                     // Only a write (bit value, tag 3) changes the motor state.
                     // A read carries an empty value; it must just report the
@@ -356,8 +364,7 @@ void setup_subscriptions() {
         "raise hfdcan1.Init.ExtFiltersNbr or drop a subscription"
     );
 
-    static FDCAN_FilterTypeDef sFilterConfig;
     for (uint32_t i = 0; i < sizeof(rx_filters) / sizeof(rx_filters[0]); ++i) {
-        HAL_IMPORTANT(apply_filter(i, &hfdcan1, &sFilterConfig, rx_filters[i]))
+        HAL_IMPORTANT(apply_filter(i, &hfdcan1, rx_filters[i]))
     }
 }

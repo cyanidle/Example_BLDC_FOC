@@ -7,8 +7,8 @@
 #include <cyphal/providers/G4CAN.h>
 #include <cyphal/allocators/o1/o1_allocator.h>
 
-#include <uavcan/diagnostic/Record_1_1.h>
-#include <uavcan/node/Heartbeat_1_0.h>
+#include <uavcan/diagnostic/Record_1_1.hpp>
+#include <uavcan/node/Heartbeat_1_0.hpp>
 #include <uavcan/node/Health_1_0.h>
 
 #include <voltbro/config/config_from_pins.hpp>
@@ -17,8 +17,8 @@
 #include <uavcan/node/Mode_1_0.h>
 
 
-TYPE_ALIAS(DiagnosticRecord, uavcan_diagnostic_Record_1_1)
-TYPE_ALIAS(HBeat, uavcan_node_Heartbeat_1_0)
+using DiagnosticRecord = uavcan_diagnostic_Record_1_1;
+using HBeat = uavcan_node_Heartbeat_1_0;
 
 static CanardNodeID NODE_ID;
 static uint8_t CYPHAL_HEALTH_STATUS = uavcan_node_Health_1_0_NOMINAL;
@@ -64,7 +64,7 @@ void restart_cyphal() {
     cyphal_interface->clear_queue();
 
     static CanardTransferID record_transfer_id = 0;
-    DiagnosticRecord::Type record;
+    DiagnosticRecord record;
     record.severity.value = uavcan_diagnostic_Severity_1_0_ERROR;
     sprintf(reinterpret_cast<char*>(record.text.elements), "cyphal_error_handler was called internally");
     record.text.count = strlen((char*)record.text.elements);
@@ -83,7 +83,7 @@ UtilityConfig utilities(micros_64, cyphal_error_handler);
 
 void heartbeat() {
     static CanardTransferID hbeat_transfer_id = 0;
-    HBeat::Type heartbeat_msg = {
+    HBeat heartbeat_msg = {
         .uptime = (uint32_t)std::floor(millis_32() / 1000.0f),
         .health = {CYPHAL_HEALTH_STATUS},
         .mode = {CYPHAL_MODE},
