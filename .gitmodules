@@ -1,6 +1,6 @@
 [submodule "Drivers/libcxxcanard"]
 	path = Drivers/libcxxcanard
-	url = ../../VBCores/libcxxcanard.git
+	url = git@github.com:cyanidle/libcxxcanard.git
 [submodule "Drivers/libvoltbro"]
 	path = Drivers/libvoltbro
 	url = ../../cyanidle/libvoltbro.git
