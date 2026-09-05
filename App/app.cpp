@@ -27,11 +27,10 @@
 
 EEPROM eeprom(&hi2c4);
 
-// Hall channel order is (ENC_1, ENC_3, ENC_2): get_encoder_step() weights the
-// three channels by the fixed `sequence` below, so this order is what maps the
-// rotor position to the correct commutation step. Putting the channels in plain
-// 1-2-3 order scrambles commutation (the motor won't drive) while leaving the
-// velocity estimate intact — do not "tidy" it.
+// Hall channels are wired ENC_1 -> pin_1, ENC_2 -> pin_2, ENC_3 -> pin_3, with
+// the phase weights (B, C, A) below mapping the 3-bit Hall state onto the
+// six-step commutation table. This order is hardware-dependent: if a motor
+// coggs or refuses to drive, verify its Hall harness permutation first.
 HallSensor hall_sensor(
     12,
     false,
@@ -118,6 +117,10 @@ static volatile int enc_rev = 0;
 [[noreturn]] void app() {
     start_timers();
     start_cyphal();
+
+    // The HallSensor ctor runs before GPIO clocks/inputs are initialized, so its
+    // cached state is meaningless until we re-sample the pins here.
+    hall_sensor.resync();
 
     eeprom.wait_until_available();
 
