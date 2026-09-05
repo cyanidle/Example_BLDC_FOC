@@ -148,6 +148,10 @@ void set_cyphal_mode(uint8_t mode) {
     CYPHAL_MODE = mode;
 }
 
+void set_cyphal_health(uint8_t health) {
+    CYPHAL_HEALTH_STATUS = health;
+}
+
 __weak void setup_subscriptions() {
     HAL_FDCAN_ConfigGlobalFilter(
         &hfdcan1,

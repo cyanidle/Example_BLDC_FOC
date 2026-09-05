@@ -14,6 +14,7 @@ void setup_subscriptions();
 void cyphal_loop();
 void start_cyphal();
 void set_cyphal_mode(uint8_t mode);
+void set_cyphal_health(uint8_t health);
 CanardNodeID get_node_id();
 
 // common.cpp

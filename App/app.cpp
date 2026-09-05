@@ -165,6 +165,20 @@ static volatile int enc_rev = 0;
 
         motor->update();
 
+        const millis now_ms = millis_32();
+
+        // The gate driver's nFAULT line (active low) is otherwise ignored by
+        // firmware; surface it over Cyphal so a tripped bridge is visible.
+        static millis fault_check_time = 0;
+        if ((now_ms - fault_check_time) >= 50) {
+            fault_check_time = now_ms;
+            const bool faulted =
+                HAL_GPIO_ReadPin(DRV_FAULT_GPIO_Port, DRV_FAULT_Pin) == GPIO_PIN_RESET;
+            set_cyphal_health(
+                faulted ? uavcan_node_Health_1_0_WARNING : uavcan_node_Health_1_0_NOMINAL
+            );
+        }
+
         cyphal_loop();
     }
 }
