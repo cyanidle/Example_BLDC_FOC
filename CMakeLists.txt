@@ -55,7 +55,11 @@ target_compile_options(vbcore PRIVATE
 target_include_directories(vbcore PRIVATE
     App
     Drivers/libcxxcanard
+    # Order matters: generated DSDL headers do `#include <cyphal.h>`, which must
+    # resolve to the modular cyphal/cyphal.h, not the amalgamated src/cyphal.h.
+    Drivers/libcxxcanard/cyphal
     Drivers/libcxxcanard/libs
+    Drivers/libcxxcanard/src
     Drivers/libvoltbro
     Drivers/CMSIS/DSP/Include
 )
