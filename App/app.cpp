@@ -1,6 +1,7 @@
 #include "app.h"
 
 #include <memory>
+#include <cstdio>
 
 #include "tim.h"
 #include "i2c.h"
@@ -17,6 +18,7 @@
 #include <uavcan/primitive/scalar/Real32_1_0.hpp>
 #include <uavcan/primitive/scalar/Natural32_1_0.hpp>
 #include <uavcan/primitive/array/Integer32_1_0.hpp>
+#include <uavcan/diagnostic/Record_1_1.hpp>
 
 #include <voltbro/eeprom/eeprom.hpp>
 #include <voltbro/encoders/hall_sensor/hall_sensor.h>
@@ -167,16 +169,41 @@ static volatile int enc_rev = 0;
 
         const millis now_ms = millis_32();
 
-        // The gate driver's nFAULT line (active low) is otherwise ignored by
-        // firmware; surface it over Cyphal so a tripped bridge is visible.
         static millis fault_check_time = 0;
         if ((now_ms - fault_check_time) >= 50) {
             fault_check_time = now_ms;
-            const bool faulted =
+            const bool driver_faulted =
                 HAL_GPIO_ReadPin(DRV_FAULT_GPIO_Port, DRV_FAULT_Pin) == GPIO_PIN_RESET;
+            const auto fault = motor->get_fault();
             set_cyphal_health(
-                faulted ? uavcan_node_Health_1_0_WARNING : uavcan_node_Health_1_0_NOMINAL
+                driver_faulted || fault != SixStepController::Fault::NONE ?
+                    uavcan_node_Health_1_0_WARNING : uavcan_node_Health_1_0_NOMINAL
             );
+
+            static auto reported_fault = SixStepController::Fault::NONE;
+            if (fault != reported_fault) {
+                using Fault = SixStepController::Fault;
+                const char* reason = "cleared";
+                switch (fault) {
+                    case Fault::NONE: break;
+                    case Fault::INVALID_HALL: reason = "invalid Hall inputs (000/111)"; break;
+                    case Fault::INVALID_SUPPLY: reason = "invalid bus voltage"; break;
+                    case Fault::INVALID_COMMAND: reason = "non-finite voltage command"; break;
+                    case Fault::STALLED: reason = "stalled; send zero to rearm"; break;
+                }
+                uavcan_diagnostic_Record_1_1 msg = {};
+                msg.severity.value = fault == Fault::NONE ?
+                    uavcan_diagnostic_Severity_1_0_INFO : uavcan_diagnostic_Severity_1_0_WARNING;
+                msg.text.count = std::snprintf(
+                    reinterpret_cast<char*>(msg.text.elements), sizeof(msg.text.elements),
+                    "six-step: %s; kicks=%u", reason, (unsigned)motor->get_recovery_attempts()
+                );
+                static CanardTransferID fault_transfer_id = 0;
+                get_interface()->send_msg<uavcan_diagnostic_Record_1_1>(
+                    &msg, uavcan_diagnostic_Record_1_1_FIXED_PORT_ID_, &fault_transfer_id
+                );
+                reported_fault = fault;
+            }
         }
 
         cyphal_loop();
