@@ -5,6 +5,7 @@
 
 #include "Arduino.h"
 #include "motor_tuning.h"
+#include "serial_line.h"
 #include "BLDCMotor.h"
 #include "common/base_classes/Sensor.h"
 #include "drivers/BLDCDriver3PWM.h"
@@ -13,8 +14,11 @@
 #define VB_SIMPLEFOC_SENSOR_DIRECTION CW
 #endif
 
+// Bench-aligned with VB_SIMPLEFOC_ALIGN_ON_INIT=1: SimpleFOC reported
+// zero_electric_angle = 1.0472 rad and sensor direction CW on this module
+// (Hall angles are quantised to 60 degrees electrical, hence the round value).
 #ifndef VB_SIMPLEFOC_ZERO_ELECTRIC_ANGLE
-#define VB_SIMPLEFOC_ZERO_ELECTRIC_ANGLE 0.0f
+#define VB_SIMPLEFOC_ZERO_ELECTRIC_ANGLE 1.04719755f
 #endif
 
 #ifndef VB_SIMPLEFOC_ALIGN_ON_INIT
@@ -45,9 +49,16 @@ private:
     int32_t last_counts = 0;
     uint32_t last_tick = 0;
     bool started = false;
+    // Shaft rate is measured on the motor side of the gearbox; the rest of the
+    // firmware (speed targets, reported velocity, odometry) speaks wheel rad/s.
+    float velocity_scale = 1.0f;
 
 public:
     explicit HallSensorAdapter(HallSensor& hall): halls(hall) {}
+
+    void set_velocity_scale(float scale) {
+        velocity_scale = scale;
+    }
 
     using Sensor::init;
 
@@ -76,7 +87,7 @@ public:
             if (dt_ms == 0) {
                 return velocity;
             }
-            const float measured = ((float)delta * counts_to_rad) / ((float)dt_ms * 1e-3f);
+            const float measured = ((float)delta * counts_to_rad) / ((float)dt_ms * 1e-3f) * velocity_scale;
             velocity = measured;
             last_counts = counts;
             last_tick = now;
@@ -137,6 +148,7 @@ public:
         wheel_radius(wheel_radius_m),
         velocity_pid(pid_config)
     {
+        sensor.set_velocity_scale(1.0f / (float)drive_info.common.gear_ratio);
         arduino_pwm_pin_register(PIN_INH_A, 1);
         arduino_pwm_pin_register(PIN_INH_B, 2);
         arduino_pwm_pin_register(PIN_INH_C, 3);
@@ -184,9 +196,19 @@ public:
         if (motor.init() != 1) {
             return HAL_ERROR;
         }
+#if VB_SIMPLEFOC_ALIGN_ON_INIT
+        // Alignment turns the rotor, so the bridge has to be live while
+        // initFOC() runs; it is parked again right after.
+        driver.enable();
+        HAL_GPIO_WritePin(DRV_ENABLE_GPIO_Port, DRV_ENABLE_Pin, GPIO_PIN_SET);
+#endif
         if (motor.initFOC() != 1) {
             return HAL_ERROR;
         }
+#if VB_SIMPLEFOC_ALIGN_ON_INIT
+        driver.disable();
+        HAL_GPIO_WritePin(DRV_ENABLE_GPIO_Port, DRV_ENABLE_Pin, GPIO_PIN_RESET);
+#endif
         motor.disable();
         return HAL_OK;
     }
@@ -195,6 +217,9 @@ public:
         if (motor.enabled) {
             return HAL_OK;
         }
+        serial_line_debug("simplefoc start: zero_electric_angle", motor.zero_electric_angle);
+        serial_line_debug("simplefoc start: sensor_direction", (float)(int)motor.sensor_direction);
+        serial_line_debug("simplefoc start: voltage_limit", motor.voltage_limit);
         driver.setPwm(0.0f, 0.0f, 0.0f);
         for (int i = 0; i < 3; ++i) {
             HAL_GPIO_WritePin(DRV_ENABLE_GPIO_Port, DRV_ENABLE_Pin, GPIO_PIN_RESET);
