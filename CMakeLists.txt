@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.22)
 
 include(_vscode/init.cmake)
 
-set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD 17)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS ON)
 set(CMAKE_CXX_STANDARD 20)
@@ -39,7 +39,7 @@ target_link_libraries(vbcore PRIVATE
     DSP
 )
 
-set(VB_MOTOR_IMPL "sixstep" CACHE STRING "Motor control implementation compiled into the firmware")
+set(VB_MOTOR_IMPL "simplefoc" CACHE STRING "Motor control implementation compiled into the firmware")
 set_property(CACHE VB_MOTOR_IMPL PROPERTY STRINGS sixstep voltbro-foc simplefoc)
 
 if(VB_MOTOR_IMPL STREQUAL "sixstep")
@@ -73,6 +73,10 @@ endif()
 file(GLOB USER_SOURCES "App/*.cpp")
 file(GLOB_RECURSE LIBCXXCANARD_SOURCES "Drivers/libcxxcanard/cyphal/*.cpp" "Drivers/libcxxcanard/libs/*.c")
 file(GLOB_RECURSE LIBVOLTBRO_SOURCES "Drivers/libvoltbro/*.cpp" "Drivers/libvoltbro/*.c")
+# libvoltbro's UART configurator compiles only when HAL_UART_MODULE_ENABLED is
+# set (our USART2 channel), and it needs nanoprintf, which is not vendored. The
+# firmware configures itself over Cyphal, so that REPL is dead weight here.
+list(FILTER LIBVOLTBRO_SOURCES EXCLUDE REGEX "/voltbro/config/serial/")
 target_sources(vbcore PRIVATE
     ${USER_SOURCES}
     ${VB_MOTOR_BACKEND_SOURCES}

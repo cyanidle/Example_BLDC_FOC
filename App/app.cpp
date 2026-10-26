@@ -26,6 +26,7 @@
 
 #include "motor_backend.h"
 #include "motor_tuning.h"
+#include "serial_line.h"
 
 
 EEPROM eeprom(&hi2c4);
@@ -73,7 +74,7 @@ DriveInfo drive_info {
     .en_pin = GpioPin(DRV_ENABLE_GPIO_Port, DRV_ENABLE_Pin),
     .common = {
         .ppairs = 4,
-        .gear_ratio = 1
+        .gear_ratio = 35
     }
 };
 
@@ -127,9 +128,15 @@ static volatile int enc_rev = 0;
         wheel_radius
     );
 
+    serial_line_init();
+    serial_line_debug("boot: motor init");
     HAL_IMPORTANT(motor->init())
-    HAL_IMPORTANT(motor->start())
+    // Boot in standby: nothing energizes the bridge until something enables it
+    // explicitly (the Cyphal motor.is_on register or the serial E1 command).
+    serial_line_debug("boot: motor standby");
+    HAL_IMPORTANT(motor->stop())
 
+    serial_line_debug("boot: serial channel up");
 
     set_cyphal_mode(uavcan_node_Mode_1_0_OPERATIONAL);
 
@@ -145,6 +152,7 @@ static volatile int enc_rev = 0;
 
         motor->update();
 
+        serial_line_poll(*motor);
 
         const millis_t now_ms = millis_32();
 
@@ -249,6 +257,10 @@ static void apply_config_value(int32_t id, float value) {
     }
 }
 
+void app_apply_config(int32_t id, float value) {
+    apply_config_value(id, value);
+}
+
 void in_loop_reporting(millis_t current_t) {
     static millis_t report_time = 0;
     static const auto node_id = get_node_id();
@@ -285,6 +297,7 @@ public:
         if (!motor) {
             return;
         }
+        serial_line_debug("can speed_cmd", msg.value);
         motor->set_speed_target(msg.value);  // m/s
     }
 };
@@ -298,6 +311,7 @@ public:
         if (!motor) {
             return;
         }
+        serial_line_debug("can direct_cmd", msg.value);
         motor->set_voltage_point(msg.value);
     }
 };

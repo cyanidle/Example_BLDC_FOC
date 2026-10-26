@@ -16,3 +16,18 @@ target_compile_definitions(six_step_recovery PRIVATE
 target_include_directories(six_step_recovery PRIVATE hal ${VOLTBRO})
 target_compile_options(six_step_recovery PRIVATE -Wall -Wextra -Wno-reorder)
 add_test(NAME six_step_recovery COMMAND six_step_recovery)
+
+add_executable(serial_line
+    serial_line.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../App/serial_line.cpp
+)
+target_compile_features(serial_line PRIVATE cxx_std_20)
+target_compile_definitions(serial_line PRIVATE
+    STM32_G HAL_TIM_MODULE_ENABLED HAL_ADC_MODULE_ENABLED HAL_UART_MODULE_ENABLED)
+target_include_directories(serial_line PRIVATE
+    hal
+    ${CMAKE_CURRENT_LIST_DIR}/../App
+    ${VOLTBRO}
+)
+target_compile_options(serial_line PRIVATE -Wall -Wextra -Wno-reorder)
+add_test(NAME serial_line COMMAND serial_line)

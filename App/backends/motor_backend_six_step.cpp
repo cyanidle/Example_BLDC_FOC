@@ -10,6 +10,10 @@ private:
     SixStepController motor;
     SixStepSpeedController speed;
     bool speed_mode = false;
+    // The speed loop regulates rad/s (its gains are documented as V per rad/s),
+    // so a linear target is converted here instead of scaling the feedback down
+    // to m/s, which would shrink every gain by 1/wheel_radius.
+    float wheel_radius;
 
     static MotorFault translate(SixStepController::Fault fault) {
         switch (fault) {
@@ -38,9 +42,9 @@ public:
         float wheel_radius_m
     ):
         motor(runtime_config, drive_info, htim, inverter, hall),
-        speed(motor, PIDConfig(velocity_pid))
+        speed(motor, PIDConfig(velocity_pid)),
+        wheel_radius(wheel_radius_m)
     {
-        speed.set_feedback_scale(wheel_radius_m);
     }
 
     const char* name() const override {
@@ -77,7 +81,7 @@ public:
             speed.reset();
             speed_mode = true;
         }
-        speed.set_target_velocity(linear_m_s);
+        speed.set_target_velocity(linear_m_s / wheel_radius);
     }
 
     void run_speed_loop(float dt_s) override {
@@ -87,7 +91,7 @@ public:
     }
 
     void set_wheel_radius(float radius_m) override {
-        speed.set_feedback_scale(radius_m);
+        wheel_radius = radius_m;
     }
 
     void set_velocity_pid(const PIDConfig& config) override {

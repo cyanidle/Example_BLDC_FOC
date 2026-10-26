@@ -14,9 +14,9 @@
  * Backend-independent face of the wheel-drive control loop. Exactly one
  * implementation is compiled in, selected by VB_MOTOR_IMPL in CMakeLists.txt:
  *
+ *   simplefoc    (default) vendored Arduino-FOC (SimpleFOC) BLDCMotor over our bridge
  *   sixstep      libvoltbro SixStepController + external velocity PID
  *   voltbro-foc  libvoltbro FOC (CORDIC, current control, internal velocity loop)
- *   simplefoc    vendored Arduino-FOC (SimpleFOC) BLDCMotor over our bridge
  */
 enum class MotorFault: uint8_t {
     NONE,

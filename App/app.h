@@ -21,3 +21,7 @@ CanardNodeID get_node_id();
 micros_t micros_64();
 millis_t millis_32();
 void start_timers();
+
+// app.cpp: applies one runtime-config value with the same vocabulary as the CAN
+// config topic (see ConfigId there and mods/config_defs.lua in the repo root).
+void app_apply_config(int32_t id, float value);

@@ -6,9 +6,9 @@
 
 | value | backend | control |
 |-------|---------|---------|
-| `sixstep` (default) | libvoltbro `SixStepController` + external velocity PID | Hall-only six-step commutation, run-time stall recovery |
+| `simplefoc` (default) | vendored Arduino-FOC v2.4.0 (`Drivers/Arduino-FOC`) | 3-PWM sine FOC with SimpleFOC's own velocity PID |
+| `sixstep` | libvoltbro `SixStepController` + external velocity PID | Hall-only six-step commutation, run-time stall recovery |
 | `voltbro-foc` | libvoltbro `FOC` | CORDIC field-oriented control with d/q current loops at 5 kHz, velocity loop inside the library |
-| `simplefoc` | vendored Arduino-FOC v2.4.0 (`Drivers/Arduino-FOC`) | 3-PWM sine FOC with SimpleFOC's own velocity PID |
 
 All three sit behind one interface, `App/motor_backend.h` (`MotorBackend`), and
 `App/app.cpp` is implementation-agnostic: it forwards the two CAN command topics
@@ -18,14 +18,14 @@ velocity / encoder count / faults identically. `make_motor_backend()` is defined
 by the single backend translation unit CMake compiles in.
 
 ```sh
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DVB_MOTOR_IMPL=sixstep
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
 ninja -C build
+
+cmake -S . -B build-sixstep -G Ninja -DCMAKE_BUILD_TYPE=Debug -DVB_MOTOR_IMPL=sixstep
+ninja -C build-sixstep
 
 cmake -S . -B build-foc -G Ninja -DCMAKE_BUILD_TYPE=Debug -DVB_MOTOR_IMPL=voltbro-foc
 ninja -C build-foc
-
-cmake -S . -B build-simplefoc -G Ninja -DCMAKE_BUILD_TYPE=Debug -DVB_MOTOR_IMPL=simplefoc
-ninja -C build-simplefoc
 ```
 
 Use one build directory per implementation (the object files differ), or
