@@ -288,8 +288,7 @@ void in_loop_reporting(millis_t current_t) {
     }
 }
 
-// The module boots in standby and the cart only speaks the command topics, so a
-// command is also the enable: without this the Pi cannot make the wheel move.
+// A command enables too: a later command overrides an explicit motor.is_on = 0.
 static void enable_on_command() {
     if (!motor->is_on()) {
         motor->set_state(true);
