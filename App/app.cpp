@@ -23,8 +23,9 @@
 #include <voltbro/eeprom/eeprom.hpp>
 #include <voltbro/encoders/hall_sensor/hall_sensor.h>
 #include <voltbro/devices/inverter.hpp>
-#include <voltbro/motors/bldc/six_step/six_step_controller.h>
-#include <voltbro/motors/bldc/six_step/six_step_speed_controller.h>
+
+#include "motor_backend.h"
+#include "motor_tuning.h"
 
 
 EEPROM eeprom(&hi2c4);
@@ -33,8 +34,9 @@ EEPROM eeprom(&hi2c4);
 // the phase weights (B, C, A) below mapping the 3-bit Hall state onto the
 // six-step commutation table. This order is hardware-dependent: if a motor
 // coggs or refuses to drive, verify its Hall harness permutation first.
+// CPR is one count per Hall state: six per electrical turn, so 6 * pole pairs.
 HallSensor hall_sensor(
-    12,
+    24,
     false,
     ENC_1_GPIO_Port,
     ENC_1_Pin,
@@ -49,9 +51,9 @@ HallSensor hall_sensor(
     }
 );
 
-// Current-sense / bus-voltage front end. The six-step controller reads bus
-// voltage from here to scale its PWM, so it must be constructed and handed to
-// the motor (motor->init() starts its ADC+DMA).
+// Current-sense / bus-voltage front end. Every backend reads bus voltage from
+// here to scale its PWM, so it must be constructed and handed to the motor
+// (the backend's init() starts its ADC+DMA).
 Inverter inverter(&hadc1);
 DriveRuntimeConfig drive_runtime_config{};
 
@@ -70,20 +72,12 @@ DriveInfo drive_info {
     },
     .en_pin = GpioPin(DRV_ENABLE_GPIO_Port, DRV_ENABLE_Pin),
     .common = {
-        .ppairs = 2,
+        .ppairs = 4,
         .gear_ratio = 1
     }
 };
 
-std::unique_ptr<SixStepController> motor;
-std::unique_ptr<SixStepSpeedController> speed_controller;
-
-// Active control mode. DIRECT_VOLTAGE feeds open-loop voltage straight to the
-// motor (bring-up / tuning); SPEED runs the velocity PID. A command on either
-// topic switches the mode, so the two never fight over the voltage set-point.
-// A single byte: reads/writes are inherently atomic on Cortex-M4.
-enum class ControlMode : uint8_t { DIRECT_VOLTAGE, SPEED };
-static volatile ControlMode control_mode = ControlMode::DIRECT_VOLTAGE;
+std::unique_ptr<MotorBackend> motor;
 
 /* ---- Runtime, CAN-tunable parameters (see ConfigSub / CONFIG_PORT below) ----
  * These have safe defaults so the node runs before any config message arrives;
@@ -91,20 +85,10 @@ static volatile ControlMode control_mode = ControlMode::DIRECT_VOLTAGE;
 // Naturally 4-byte aligned, so reads/writes are atomic on Cortex-M4.
 static float wheel_radius = 0.05f;  // m (default: 0.1 m wheel diameter)
 
-// Default velocity-PID gains. Output is a voltage set-point (V) per rad/s of error.
-// Conservative placeholders: tune in the field via the config topic.
+// Default velocity-PID gains (see motor_tuning.h for the per-implementation
+// values). Overridden at run time by the config topic.
 static PIDConfig make_default_pid_config() {
-    return PIDConfig {
-        .kp = 0.5f,
-        .ki = 0.1f,
-        .kd = 0.0f,
-        .integral_error_lim = 10.0f,  // cap on accumulated error (rad/s * s)
-        // Output is a voltage set-point: clamp it to the supply rail. Leaving
-        // these at the +/-FLT_MAX default also disables the regulator's
-        // saturation anti-windup (its "raw < max_output" test never trips).
-        .max_output = 24.0f,          // V
-        .min_output = -24.0f          // V
-    };
+    return motor_tuning::default_velocity_pid_config();
 }
 static PIDConfig velocity_pid_config = make_default_pid_config();
 
@@ -127,77 +111,80 @@ static volatile int enc_rev = 0;
     // The EEPROM is only probed for presence; nothing is read from it later, so
     // a missing/stuck EEPROM must not block motor initialization forever.
     {
-        const millis eeprom_wait_start = millis_32();
+        const millis_t eeprom_wait_start = millis_32();
         while (!eeprom.is_connected() && (millis_32() - eeprom_wait_start) < 500) {
             HAL_Delay(2);
         }
     }
 
-    motor = std::make_unique<SixStepController>(
+    motor = make_motor_backend(
         drive_runtime_config,
         drive_info,
         &htim1,
         inverter,
-        hall_sensor
+        hall_sensor,
+        PIDConfig(velocity_pid_config),
+        wheel_radius
     );
 
     HAL_IMPORTANT(motor->init())
     HAL_IMPORTANT(motor->start())
 
-    speed_controller = std::make_unique<SixStepSpeedController>(
-        *motor,
-        PIDConfig(velocity_pid_config)
-    );
-    // Regulate linear wheel speed (m/s): scale the angular feedback by radius.
-    speed_controller->set_feedback_scale(wheel_radius);
 
     set_cyphal_mode(uavcan_node_Mode_1_0_OPERATIONAL);
 
     // Velocity PID is run at a fixed cadence so its dt is constant and stable.
-    constexpr micros PID_PERIOD_US = 5000;  // 200 Hz
-    static micros pid_time = 0;
+    constexpr micros_t PID_PERIOD_US = 5000;  // 200 Hz
+    static micros_t pid_time = 0;
     while(true) {
-        micros now = micros_64();
+        micros_t now = micros_64();
 
         EACH_N_MICROS(now, pid_time, PID_PERIOD_US, {
-            if (control_mode == ControlMode::SPEED) {
-                speed_controller->update((float)PID_PERIOD_US * 1e-6f);
-            }
+            motor->run_speed_loop((float)PID_PERIOD_US * 1e-6f);
         })
 
         motor->update();
 
-        const millis now_ms = millis_32();
 
-        static millis fault_check_time = 0;
+        const millis_t now_ms = millis_32();
+
+        static millis_t fault_check_time = 0;
         if ((now_ms - fault_check_time) >= 50) {
             fault_check_time = now_ms;
             const bool driver_faulted =
                 HAL_GPIO_ReadPin(DRV_FAULT_GPIO_Port, DRV_FAULT_Pin) == GPIO_PIN_RESET;
             const auto fault = motor->get_fault();
             set_cyphal_health(
-                driver_faulted || fault != SixStepController::Fault::NONE ?
+                driver_faulted || fault != MotorFault::NONE ?
                     uavcan_node_Health_1_0_WARNING : uavcan_node_Health_1_0_NOMINAL
             );
 
-            static auto reported_fault = SixStepController::Fault::NONE;
+            static auto reported_fault = MotorFault::NONE;
             if (fault != reported_fault) {
-                using Fault = SixStepController::Fault;
                 const char* reason = "cleared";
                 switch (fault) {
-                    case Fault::NONE: break;
-                    case Fault::INVALID_HALL: reason = "invalid Hall inputs (000/111)"; break;
-                    case Fault::INVALID_SUPPLY: reason = "invalid bus voltage"; break;
-                    case Fault::INVALID_COMMAND: reason = "non-finite voltage command"; break;
-                    case Fault::STALLED: reason = "stalled; send zero to rearm"; break;
+                    case MotorFault::NONE: break;
+                    case MotorFault::INVALID_HALL: reason = "invalid Hall inputs (000/111)"; break;
+                    case MotorFault::INVALID_SUPPLY: reason = "invalid bus voltage"; break;
+                    case MotorFault::INVALID_COMMAND: reason = "non-finite voltage command"; break;
+                    case MotorFault::STALLED: reason = "stalled; send zero to rearm"; break;
                 }
                 uavcan_diagnostic_Record_1_1 msg = {};
-                msg.severity.value = fault == Fault::NONE ?
+                msg.severity.value = fault == MotorFault::NONE ?
                     uavcan_diagnostic_Severity_1_0_INFO : uavcan_diagnostic_Severity_1_0_WARNING;
-                msg.text.count = std::snprintf(
-                    reinterpret_cast<char*>(msg.text.elements), sizeof(msg.text.elements),
-                    "six-step: %s; kicks=%u", reason, (unsigned)motor->get_recovery_attempts()
-                );
+                char* text = reinterpret_cast<char*>(msg.text.elements);
+                const size_t text_size = sizeof(msg.text.elements);
+                const unsigned kicks = motor->get_recovery_attempts();
+                if (kicks == 0) {
+                    msg.text.count = std::snprintf(
+                        text, text_size, "%s: %s", motor->name(), reason
+                    );
+                }
+                else {
+                    msg.text.count = std::snprintf(
+                        text, text_size, "%s: %s; kicks=%u", motor->name(), reason, kicks
+                    );
+                }
                 static CanardTransferID fault_transfer_id = 0;
                 get_interface()->send_msg<uavcan_diagnostic_Record_1_1>(
                     &msg, uavcan_diagnostic_Record_1_1_FIXED_PORT_ID_, &fault_transfer_id
@@ -241,9 +228,8 @@ static void apply_config_value(int32_t id, float value) {
     if (id == CFG_WHEEL_DIAMETER) {
         if (value > 0.0f) {
             wheel_radius = value * 0.5f;
-            // Keep the linear-speed PID feedback scale in sync with the radius.
-            if (speed_controller) {
-                speed_controller->set_feedback_scale(wheel_radius);
+            if (motor) {
+                motor->set_wheel_radius(wheel_radius);
             }
         }
         return;
@@ -258,13 +244,13 @@ static void apply_config_value(int32_t id, float value) {
         default: return;  // unknown id: ignore
     }
     velocity_pid_config = pid;
-    if (speed_controller) {
-        speed_controller->set_pid_config(PIDConfig(velocity_pid_config));
+    if (motor) {
+        motor->set_velocity_pid(velocity_pid_config);
     }
 }
 
-void in_loop_reporting(millis current_t) {
-    static millis report_time = 0;
+void in_loop_reporting(millis_t current_t) {
+    static millis_t report_time = 0;
     static const auto node_id = get_node_id();
     if ((current_t - report_time) >= (50)) {
         Natural32 enc_msg = {};
@@ -289,33 +275,29 @@ void in_loop_reporting(millis current_t) {
     }
 }
 
-// Target wheel speed command, m/s. Switches into closed-loop SPEED mode; the
-// controller regulates linear wheel speed directly (feedback scaled by radius).
+// Target wheel speed command, m/s. Enters closed-loop speed regulation; the
+// backend resets its regulator when the mode changes so a stale integral from a
+// previous set-point does not kick the motor.
 class SpeedCommandSub: public AbstractSubscription<Real32> {
 public:
     SpeedCommandSub(InterfacePtr interface, CanardPortID port_id): AbstractSubscription<Real32>(interface, port_id) {};
-    void handler(const Real32& msg, CanardRxTransfer* _) override {
-        if (!speed_controller) {
+    void handler(const Real32& msg, CanardRxTransfer*) override {
+        if (!motor) {
             return;
         }
-        if (control_mode != ControlMode::SPEED) {
-            // Entering SPEED mode: drop any PID integral accumulated under a
-            // previous set-point so it doesn't kick the motor.
-            speed_controller->reset();
-        }
-        speed_controller->set_target_velocity(msg.value);  // m/s
-        control_mode = ControlMode::SPEED;
+        motor->set_speed_target(msg.value);  // m/s
     }
 };
 
-// Direct open-loop voltage command, V. Switches into DIRECT_VOLTAGE mode (the
-// velocity PID stops) and feeds the voltage straight to the motor — for
-// bring-up / tuning.
+// Direct open-loop voltage command, V. Leaves speed regulation and feeds the
+// voltage straight to the motor — for bring-up / tuning.
 class DirectSpeedCommandSub: public AbstractSubscription<Real32> {
 public:
     DirectSpeedCommandSub(InterfacePtr interface, CanardPortID port_id): AbstractSubscription<Real32>(interface, port_id) {};
-    void handler(const Real32& msg, CanardRxTransfer* _) override {
-        control_mode = ControlMode::DIRECT_VOLTAGE;
+    void handler(const Real32& msg, CanardRxTransfer*) override {
+        if (!motor) {
+            return;
+        }
         motor->set_voltage_point(msg.value);
     }
 };
@@ -324,7 +306,7 @@ public:
 class ConfigSub: public AbstractSubscription<Int32Array> {
 public:
     ConfigSub(InterfacePtr interface, CanardPortID port_id): AbstractSubscription<Int32Array>(interface, port_id) {};
-    void handler(const Int32Array& msg, CanardRxTransfer* _) override {
+    void handler(const Int32Array& msg, CanardRxTransfer*) override {
         if (msg.value.count < 3) {
             return;
         }

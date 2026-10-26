@@ -25,7 +25,7 @@ static uint8_t CYPHAL_HEALTH_STATUS = uavcan_node_Health_1_0_NOMINAL;
 static uint8_t CYPHAL_MODE = uavcan_node_Mode_1_0_INITIALIZATION;
 static std::shared_ptr<CyphalInterface> cyphal_interface;
 static bool _is_cyphal_on = false;
-static millis delay_cyphal_until_millis = 0;
+static millis_t delay_cyphal_until_millis = 0;
 
 #define DIP_PIN_INFO(ind)                                         \
     PinInfo {                                                     \
@@ -105,10 +105,10 @@ void cyphal_loop() {
         cyphal_interface->loop();
     }
     if (_is_cyphal_on) {
-        millis current_t = millis_32();
+        millis_t current_t = millis_32();
         in_loop_reporting(current_t);
 
-        static micros heartbeat_time = 0;
+        static micros_t heartbeat_time = 0;
         if ((current_t - heartbeat_time) >= (1000)) {
             heartbeat();
             heartbeat_time = current_t;
@@ -162,7 +162,7 @@ __weak void setup_subscriptions() {
     );
 }
 
-__weak void in_loop_reporting(millis current_t) {
+__weak void in_loop_reporting(millis_t) {
     // SEND REGULAR MESSAGES HERE
     // OR DEFINE THIS FUNCTION ELSEWHERE
     // OR MODIFY cyphal_loop

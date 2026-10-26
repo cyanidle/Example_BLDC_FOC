@@ -39,11 +39,43 @@ target_link_libraries(vbcore PRIVATE
     DSP
 )
 
-file(GLOB_RECURSE USER_SOURCES "App/*.cpp")
+set(VB_MOTOR_IMPL "sixstep" CACHE STRING "Motor control implementation compiled into the firmware")
+set_property(CACHE VB_MOTOR_IMPL PROPERTY STRINGS sixstep voltbro-foc simplefoc)
+
+if(VB_MOTOR_IMPL STREQUAL "sixstep")
+    set(VB_MOTOR_BACKEND_SOURCES App/backends/motor_backend_six_step.cpp)
+    set(VB_MOTOR_BACKEND_DEFINE VB_MOTOR_IMPL_SIX_STEP)
+elseif(VB_MOTOR_IMPL STREQUAL "voltbro-foc")
+    set(VB_MOTOR_BACKEND_SOURCES App/backends/motor_backend_voltbro_foc.cpp)
+    set(VB_MOTOR_BACKEND_DEFINE VB_MOTOR_IMPL_VOLTBRO_FOC)
+elseif(VB_MOTOR_IMPL STREQUAL "simplefoc")
+    set(VB_ARDUINO_FOC "${CMAKE_CURRENT_SOURCE_DIR}/Drivers/Arduino-FOC")
+    set(VB_MOTOR_BACKEND_SOURCES
+        App/backends/motor_backend_simplefoc.cpp
+        ${VB_ARDUINO_FOC}/compat/arduino_core.cpp
+        ${VB_ARDUINO_FOC}/board/vbcore_g4_pwm.cpp
+        ${VB_ARDUINO_FOC}/src/common/foc_utils.cpp
+        ${VB_ARDUINO_FOC}/src/common/lowpass_filter.cpp
+        ${VB_ARDUINO_FOC}/src/common/pid.cpp
+        ${VB_ARDUINO_FOC}/src/common/time_utils.cpp
+        ${VB_ARDUINO_FOC}/src/common/base_classes/CurrentSense.cpp
+        ${VB_ARDUINO_FOC}/src/common/base_classes/FOCMotor.cpp
+        ${VB_ARDUINO_FOC}/src/common/base_classes/Sensor.cpp
+        ${VB_ARDUINO_FOC}/src/BLDCMotor.cpp
+        ${VB_ARDUINO_FOC}/src/drivers/BLDCDriver3PWM.cpp
+    )
+    set(VB_MOTOR_BACKEND_DEFINE VB_MOTOR_IMPL_SIMPLEFOC)
+else()
+    message(FATAL_ERROR
+        "VB_MOTOR_IMPL must be one of sixstep, voltbro-foc, simplefoc (got '${VB_MOTOR_IMPL}')")
+endif()
+
+file(GLOB USER_SOURCES "App/*.cpp")
 file(GLOB_RECURSE LIBCXXCANARD_SOURCES "Drivers/libcxxcanard/cyphal/*.cpp" "Drivers/libcxxcanard/libs/*.c")
 file(GLOB_RECURSE LIBVOLTBRO_SOURCES "Drivers/libvoltbro/*.cpp" "Drivers/libvoltbro/*.c")
 target_sources(vbcore PRIVATE
     ${USER_SOURCES}
+    ${VB_MOTOR_BACKEND_SOURCES}
     ${LIBVOLTBRO_SOURCES}
     ${LIBCXXCANARD_SOURCES}
 )
@@ -69,7 +101,19 @@ target_compile_definitions(vbcore PRIVATE
     -D__FPU_PRESENT=1U
     -DSTM32_G
     -DSTM32G
+    -DSTM32G4
+    -D${VB_MOTOR_BACKEND_DEFINE}
 )
+
+if(VB_MOTOR_IMPL STREQUAL "simplefoc")
+    target_include_directories(vbcore PRIVATE
+        ${VB_ARDUINO_FOC}/src
+        ${VB_ARDUINO_FOC}/compat
+    )
+    target_compile_definitions(vbcore PRIVATE
+        -DSIMPLEFOC_DISABLE_DEBUG
+    )
+endif()
 
 add_custom_command(
     POST_BUILD
