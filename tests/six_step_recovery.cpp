@@ -66,10 +66,10 @@ struct Rig {
         CHECK(timer.CCR1 == 0 && timer.CCR2 == 0 && timer.CCR3 == 0);
         CHECK((bridge_pins.ODR & 7) == 0);
     }
-    void driving(unsigned source, unsigned sink) const {
+    void driving(unsigned pwm_phase, unsigned gnd_phase) const {
         const uint32_t duty[] = {timer.CCR1, timer.CCR2, timer.CCR3};
-        for (unsigned i = 0; i < 3; ++i) CHECK(duty[i] == (i == source ? 333U : 0U));
-        CHECK((bridge_pins.ODR & 7) == ((1U << source) | (1U << sink)));
+        for (unsigned i = 0; i < 3; ++i) CHECK(duty[i] == (i == pwm_phase ? 333U : 0U));
+        CHECK((bridge_pins.ODR & 7) == ((1U << pwm_phase) | (1U << gnd_phase)));
     }
 };
 
@@ -103,14 +103,14 @@ void bounded_retries_and_rearm() {
         r.at(t);
         if (t == 199) {
             CHECK(!r.motor.is_recovering());
-            r.driving(0, 1);
+            r.driving(1, 0);
         }
         if (t == 200 || t == 439) {
             CHECK(r.motor.get_recovery_attempts() == 1);
         }
         if ((t >= 200 && t < 240) || (t >= 440 && t < 480) || (t >= 680 && t < 720)) {
             CHECK(r.motor.is_recovering());
-            r.driving(0, 2); // +60 degrees, same 4 V duty
+            r.driving(2, 0); // +60 degrees, same 4 V duty
         }
     }
     CHECK(r.motor.get_fault() == Fault::STALLED);
@@ -127,7 +127,7 @@ void bounded_retries_and_rearm() {
     r.coasted();
     r.motor.set_voltage_point(4);
     r.at(1001); // zero and nonzero can arrive before the next update
-    r.driving(0, 2);
+    r.driving(2, 0);
     r.motor.stop();
     r.coasted();
     r.motor.start();
@@ -159,8 +159,11 @@ void successful_kick_and_later_stall() {
 
 void both_directions_and_all_sectors() {
     const uint8_t cycle[] = {1, 3, 2, 6, 4, 5};
-    const unsigned source[] = {0, 0, 1, 1, 2, 2};
-    const unsigned sink[] = {1, 2, 2, 0, 0, 1};
+    // The controller energises the sector pair in reverse on this module
+    // (libvoltbro 13865a2: bench v = +30.6 rad/s at 2 V), so the PWM phase of a
+    // sector is its second phase.
+    const unsigned pwm_phase[] = {1, 2, 2, 0, 0, 1};
+    const unsigned gnd_phase[] = {0, 0, 1, 1, 2, 2};
     for (bool inverted : {false, true}) {
         for (int sign : {-1, 1}) {
             for (unsigned i = 0; i < 6; ++i) {
@@ -168,10 +171,13 @@ void both_directions_and_all_sectors() {
                 const bool reverse = (sign < 0) != inverted;
                 r.motor.set_voltage_point(sign * 4.0f);
                 r.at(0);
-                r.driving(reverse ? sink[i] : source[i], reverse ? source[i] : sink[i]);
+                r.driving(reverse ? gnd_phase[i] : pwm_phase[i], reverse ? pwm_phase[i] : gnd_phase[i]);
                 const unsigned next = (i + (reverse ? 5 : 1)) % 6;
                 r.at(200);
-                r.driving(reverse ? sink[next] : source[next], reverse ? source[next] : sink[next]);
+                r.driving(
+                    reverse ? gnd_phase[next] : pwm_phase[next],
+                    reverse ? pwm_phase[next] : gnd_phase[next]
+                );
                 r.set_hall(cycle[next]);
                 r.at(210);
                 CHECK(!r.motor.is_recovering());
@@ -209,7 +215,7 @@ void invalid_inputs_and_zero_abort() {
     r.set_hall(1); // recover valid physical inputs without an EXTI
     r.at(1002);
     CHECK(r.motor.get_fault() == Fault::NONE);
-    r.driving(0, 1);
+    r.driving(1, 0);
     for (float volts : {0.0f, -1.0f, std::numeric_limits<float>::quiet_NaN()}) {
         r.inverter.voltage(volts);
         r.at(1003);
