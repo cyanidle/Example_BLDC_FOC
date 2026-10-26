@@ -132,7 +132,8 @@ static volatile int enc_rev = 0;
     serial_line_debug("boot: motor init");
     HAL_IMPORTANT(motor->init())
     // Boot in standby: nothing energizes the bridge until something enables it
-    // explicitly (the Cyphal motor.is_on register or the serial E1 command).
+    // (the first Cyphal command, the motor.is_on register write or the serial E1
+    // command).
     serial_line_debug("boot: motor standby");
     HAL_IMPORTANT(motor->stop())
 
@@ -287,6 +288,14 @@ void in_loop_reporting(millis_t current_t) {
     }
 }
 
+// The module boots in standby and the cart only speaks the command topics, so a
+// command is also the enable: without this the Pi cannot make the wheel move.
+static void enable_on_command() {
+    if (!motor->is_on()) {
+        motor->set_state(true);
+    }
+}
+
 // Target wheel speed command, m/s. Enters closed-loop speed regulation; the
 // backend resets its regulator when the mode changes so a stale integral from a
 // previous set-point does not kick the motor.
@@ -298,6 +307,7 @@ public:
             return;
         }
         serial_line_debug("can speed_cmd", msg.value);
+        enable_on_command();
         motor->set_speed_target(msg.value);  // m/s
     }
 };
@@ -312,6 +322,7 @@ public:
             return;
         }
         serial_line_debug("can direct_cmd", msg.value);
+        enable_on_command();
         motor->set_voltage_point(msg.value);
     }
 };
