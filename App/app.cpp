@@ -16,7 +16,6 @@
 #include <uavcan/node/Health_1_0.h>
 #include <uavcan/si/unit/length/Scalar_1_0.hpp>
 #include <uavcan/primitive/scalar/Real32_1_0.hpp>
-#include <uavcan/primitive/scalar/Natural32_1_0.hpp>
 #include <uavcan/primitive/array/Integer32_1_0.hpp>
 #include <uavcan/diagnostic/Record_1_1.hpp>
 
@@ -207,7 +206,6 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
 
 // libcxxcanard no longer provides TYPE_ALIAS: subscriptions take the raw DSDL
 // types directly (AbstractSubscription<uavcan_primitive_scalar_Real32_1_0>).
-using Natural32 = uavcan_primitive_scalar_Natural32_1_0;
 using Real32 = uavcan_primitive_scalar_Real32_1_0;
 using Int32Array = uavcan_primitive_array_Integer32_1_0;
 using Travel = uavcan_si_unit_length_Scalar_1_0;
