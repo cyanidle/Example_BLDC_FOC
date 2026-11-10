@@ -14,17 +14,12 @@ All three sit behind one interface, `App/motor_backend.h` (`MotorBackend`), and
 `App/app.cpp` is implementation-agnostic: it forwards the two CAN command topics
 to `set_voltage_point()` / `set_speed_target()`, calls `update()` every loop
 iteration, runs the speed loop from the fixed 200 Hz slot, and reports
-velocity / encoder count / faults identically. `make_motor_backend()` is defined
-by the single backend translation unit CMake compiles in.
+velocity / accumulated wheel travel / faults identically. `make_motor_backend()`
+is defined by the single backend translation unit CMake compiles in.
 
-Speed crosses `MotorBackend` in wheel units only: `set_speed_target()` takes the
-wheel linear speed in m/s, the façade divides by the wheel radius and hands the
-backend a wheel angular set-point (`set_wheel_speed_target()`, rad/s), and
-`get_linear_velocity()` multiplies the reported wheel rad/s back. A backend and
-its regulator therefore work purely in wheel rad/s — the velocity-PID gains are
-V per rad/s (A per rad/s for `voltbro-foc`) and stay valid when the wheel
-diameter changes over the config topic. Every command source (CAN speed topic,
-serial `T`, the cart runtime) speaks m/s.
+Speed, travel and every command source speak wheel units (m/s, m); the m/s <-> wheel rad/s
+conversion and the wheel radius itself live in the façade — the unit contract is at the
+top of `App/motor_backend.h`.
 
 ```sh
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug

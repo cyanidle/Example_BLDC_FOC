@@ -124,6 +124,10 @@ public:
         return motor.get_velocity();
     }
 
+    float get_wheel_angle() const override {
+        return motor.get_shaft_angle();
+    }
+
     MotorFault get_fault() const override {
         return fault;
     }

@@ -62,15 +62,22 @@ public:
 
     using Sensor::init;
 
+    // Absolute rotor count: wraps per revolution in get_value(), so the turn
+    // count has to be folded in and the pair sampled atomically.
+    int32_t get_counts() const {
+        int32_t counts;
+        CRITICAL_SECTION(
+            counts = halls.get_revolutions() * (int32_t)halls.CPR + (int32_t)halls.get_value();
+        )
+        return counts;
+    }
+
     float getSensorAngle() override {
         return ((float)halls.get_value() / (float)halls.CPR) * _2PI;
     }
 
     float getVelocity() override {
-        int32_t counts;
-        CRITICAL_SECTION(
-            counts = halls.get_revolutions() * (int32_t)halls.CPR + (int32_t)halls.get_value();
-        )
+        int32_t counts = get_counts();
 
         const uint32_t now = HAL_GetTick();
         const float counts_to_rad = pi2 / (float)halls.CPR;
@@ -111,6 +118,8 @@ private:
     float voltage_target = 0.0f;
     float speed_target = 0.0f;
     MotorFault fault = MotorFault::NONE;
+    // Wheel (gearbox output) radians per rotor Hall count.
+    float wheel_rad_per_count = 0.0f;
 
     void apply_velocity_pid() {
         motor.PID_velocity.P = velocity_pid.kp;
@@ -148,6 +157,8 @@ public:
         velocity_pid(pid_config)
     {
         sensor.set_velocity_scale(1.0f / (float)drive_info.common.gear_ratio);
+        wheel_rad_per_count =
+            (pi2 / (float)hall.CPR) / (float)drive_info.common.gear_ratio;
         arduino_pwm_pin_register(PIN_INH_A, 1);
         arduino_pwm_pin_register(PIN_INH_B, 2);
         arduino_pwm_pin_register(PIN_INH_C, 3);
@@ -284,6 +295,10 @@ public:
 
     float get_velocity() const override {
         return motor.shaft_velocity;
+    }
+
+    float get_wheel_angle() const override {
+        return (float)sensor.get_counts() * wheel_rad_per_count;
     }
 
     MotorFault get_fault() const override {

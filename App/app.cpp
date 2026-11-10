@@ -14,7 +14,7 @@
 
 #include <uavcan/node/Mode_1_0.h>
 #include <uavcan/node/Health_1_0.h>
-#include <uavcan/si/unit/angle/Scalar_1_0.h>
+#include <uavcan/si/unit/length/Scalar_1_0.hpp>
 #include <uavcan/primitive/scalar/Real32_1_0.hpp>
 #include <uavcan/primitive/scalar/Natural32_1_0.hpp>
 #include <uavcan/primitive/array/Integer32_1_0.hpp>
@@ -60,7 +60,7 @@ DriveRuntimeConfig drive_runtime_config{};
 
 DriveInfo drive_info {
     .torque_const = 0.069f,  // Nm / A == V / (rad/s)
-    .max_current = 22,
+    .max_current = 8,
     .max_torque = 1,
     .stall_current = 13,
     .stall_timeout = 3,
@@ -74,7 +74,7 @@ DriveInfo drive_info {
     .en_pin = GpioPin(DRV_ENABLE_GPIO_Port, DRV_ENABLE_Pin),
     .common = {
         .ppairs = 4,
-        .gear_ratio = 35
+        .gear_ratio = 64
     }
 };
 
@@ -83,8 +83,9 @@ std::unique_ptr<MotorBackend> motor;
 /* ---- Runtime, CAN-tunable parameters (see ConfigSub / CONFIG_PORT below) ----
  * These have safe defaults so the node runs before any config message arrives;
  * the wheel master overwrites them at run time. */
-// Naturally 4-byte aligned, so reads/writes are atomic on Cortex-M4.
-static float wheel_radius = 0.05f;  // m (default: 0.1 m wheel diameter)
+// Boot-time wheel radius, m (0.1 m wheel diameter) until the config topic sends
+// one; the live radius lives in the motor façade.
+constexpr float BOOT_WHEEL_RADIUS_M = 0.05f;
 
 // Default velocity-PID gains (see motor_tuning.h for the per-implementation
 // values). Overridden at run time by the config topic.
@@ -99,8 +100,6 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
     }
 }
 
-static volatile encoder_data enc_val = 0;
-static volatile int enc_rev = 0;
 [[noreturn]] void app() {
     start_timers();
     start_cyphal();
@@ -125,7 +124,7 @@ static volatile int enc_rev = 0;
         inverter,
         hall_sensor,
         PIDConfig(velocity_pid_config),
-        wheel_radius
+        BOOT_WHEEL_RADIUS_M
     );
 
     serial_line_init();
@@ -211,7 +210,8 @@ static volatile int enc_rev = 0;
 using Natural32 = uavcan_primitive_scalar_Natural32_1_0;
 using Real32 = uavcan_primitive_scalar_Real32_1_0;
 using Int32Array = uavcan_primitive_array_Integer32_1_0;
-static constexpr CanardPortID ENCODER_PORT = 7100;
+using Travel = uavcan_si_unit_length_Scalar_1_0;
+static constexpr CanardPortID TRAVEL_PORT = 7100;     // accumulated wheel travel, m
 static constexpr CanardPortID VELOCITY_PORT = 7200;   // shaft angular velocity, rad/s
 static constexpr CanardPortID LINEAR_SPEED_PORT = 7300;  // wheel linear speed, m/s
 static constexpr CanardPortID SPEED_CMD_PORT = 4000;  // target wheel speed command, m/s
@@ -235,11 +235,8 @@ enum ConfigId : int32_t {
 // Apply a single decoded config value to the live parameters.
 static void apply_config_value(int32_t id, float value) {
     if (id == CFG_WHEEL_DIAMETER) {
-        if (value > 0.0f) {
-            wheel_radius = value * 0.5f;
-            if (motor) {
-                motor->set_wheel_radius(wheel_radius);
-            }
+        if (value > 0.0f && motor) {
+            motor->set_wheel_radius(value * 0.5f);
         }
         return;
     }
@@ -266,10 +263,14 @@ void in_loop_reporting(millis_t current_t) {
     static millis_t report_time = 0;
     static const auto node_id = get_node_id();
     if ((current_t - report_time) >= (50)) {
-        Natural32 enc_msg = {};
-        enc_msg.value = hall_sensor.get_value();
-        static CanardTransferID enc_transfer_id = 0;
-        get_interface()->send_msg<Natural32>(&enc_msg, ENCODER_PORT + node_id, &enc_transfer_id);
+        // Absolute wheel travel since boot, m — the odometry input on the Pi.
+        // The raw Hall count wraps per revolution and is useless as a position.
+        Travel travel_msg = {};
+        travel_msg.meter = motor->get_travel();
+        static CanardTransferID travel_transfer_id = 0;
+        get_interface()->send_msg<Travel>(
+            &travel_msg, TRAVEL_PORT + node_id, &travel_transfer_id
+        );
 
         const float angular_velocity = motor->get_velocity();  // rad/s
 

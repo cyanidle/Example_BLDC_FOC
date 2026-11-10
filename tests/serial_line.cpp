@@ -31,8 +31,7 @@ void app_apply_config(int32_t id, float value) {
 
 namespace {
 
-// The façade owns the m/s -> wheel rad/s conversion, so the fake receives the
-// converted set-point and the tests compare against the same expression.
+// The fake records the wheel rad/s the façade derives from the m/s command.
 constexpr float RADIUS_M = 0.05f;
 
 float wheel_rad_s(float linear_m_s) {
@@ -43,6 +42,7 @@ struct FakeMotor : MotorBackend {
     explicit FakeMotor(float wheel_radius_m = RADIUS_M): MotorBackend(wheel_radius_m) {}
 
     float velocity = 0.0f;
+    float angle = 0.0f;
     MotorFault fault = MotorFault::NONE;
     bool enabled = false;
     float target = 0.0f;
@@ -62,6 +62,7 @@ struct FakeMotor : MotorBackend {
     void run_speed_loop(float) override {}
     void set_velocity_pid(const PIDConfig&) override {}
     float get_velocity() const override { return velocity; }
+    float get_wheel_angle() const override { return angle; }
     MotorFault get_fault() const override { return fault; }
 
 protected:

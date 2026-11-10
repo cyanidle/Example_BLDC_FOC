@@ -22,7 +22,8 @@
  * Speed is always wheel linear velocity on the outside of this class: the
  * façade converts m/s to wheel angular velocity (rad/s) with the wheel radius,
  * so a backend and its regulator only ever work in wheel rad/s and the radius
- * never has to be re-derived per implementation.
+ * never has to be re-derived per implementation. Travel follows the same rule:
+ * accumulated wheel linear distance in m.
  */
 enum class MotorFault: uint8_t {
     NONE,
@@ -57,9 +58,10 @@ public:
         set_wheel_speed_target(linear_m_s / wheel_radius_m);
     }
 
-    // Wheel diameter changes over the config topic; the radius converts every
-    // following m/s command and every reported m/s value.
+    // The wheel diameter arrives over the config topic; every m/s value on this
+    // interface is converted with this radius.
     void set_wheel_radius(float radius_m) {
+        // Debug-only: the config path rejects a non-positive diameter.
         assert(radius_m > 0.0f);
         wheel_radius_m = radius_m;
     }
@@ -70,7 +72,17 @@ public:
     // Wheel angular velocity, rad/s.
     virtual float get_velocity() const = 0;
 
-    // Wheel linear velocity, m/s (wheel rad/s * wheel radius).
+    // Wheel (output shaft) angle, rad — accumulated since boot, signed.
+    virtual float get_wheel_angle() const = 0;
+
+    // Accumulated wheel travel, m (wheel angle * wheel radius), signed. A
+    // consumer integrates differences of it, so a runtime wheel-radius change
+    // rescales the whole history.
+    float get_travel() const {
+        return get_wheel_angle() * wheel_radius_m;
+    }
+
+    // Wheel linear velocity, m/s.
     float get_linear_velocity() const {
         return get_velocity() * wheel_radius_m;
     }
