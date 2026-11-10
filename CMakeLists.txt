@@ -39,7 +39,7 @@ target_link_libraries(vbcore PRIVATE
     DSP
 )
 
-set(VB_MOTOR_IMPL "simplefoc" CACHE STRING "Motor control implementation compiled into the firmware")
+set(VB_MOTOR_IMPL "sixstep" CACHE STRING "Motor control implementation compiled into the firmware")
 set_property(CACHE VB_MOTOR_IMPL PROPERTY STRINGS sixstep voltbro-foc simplefoc)
 
 if(VB_MOTOR_IMPL STREQUAL "sixstep")

@@ -6,8 +6,8 @@
 
 | value | backend | control |
 |-------|---------|---------|
-| `simplefoc` (default) | vendored Arduino-FOC v2.4.0 (`Drivers/Arduino-FOC`) | 3-PWM sine FOC with SimpleFOC's own velocity PID |
-| `sixstep` | libvoltbro `SixStepController` + external velocity PID | Hall-only six-step commutation, run-time stall recovery |
+| `sixstep` (default) | libvoltbro `SixStepController` + external velocity PID | Hall-only six-step commutation, run-time stall recovery |
+| `simplefoc` | vendored Arduino-FOC v2.4.0 (`Drivers/Arduino-FOC`) | 3-PWM sine FOC with SimpleFOC's own velocity PID |
 | `voltbro-foc` | libvoltbro `FOC` | CORDIC field-oriented control with d/q current loops at 5 kHz, velocity loop inside the library |
 
 All three sit behind one interface, `App/motor_backend.h` (`MotorBackend`), and
@@ -21,8 +21,8 @@ by the single backend translation unit CMake compiles in.
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
 ninja -C build
 
-cmake -S . -B build-sixstep -G Ninja -DCMAKE_BUILD_TYPE=Debug -DVB_MOTOR_IMPL=sixstep
-ninja -C build-sixstep
+cmake -S . -B build-simplefoc -G Ninja -DCMAKE_BUILD_TYPE=Debug -DVB_MOTOR_IMPL=simplefoc
+ninja -C build-simplefoc
 
 cmake -S . -B build-foc -G Ninja -DCMAKE_BUILD_TYPE=Debug -DVB_MOTOR_IMPL=voltbro-foc
 ninja -C build-foc
