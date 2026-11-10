@@ -31,7 +31,17 @@ void app_apply_config(int32_t id, float value) {
 
 namespace {
 
+// The façade owns the m/s -> wheel rad/s conversion, so the fake receives the
+// converted set-point and the tests compare against the same expression.
+constexpr float RADIUS_M = 0.05f;
+
+float wheel_rad_s(float linear_m_s) {
+    return linear_m_s / RADIUS_M;
+}
+
 struct FakeMotor : MotorBackend {
+    explicit FakeMotor(float wheel_radius_m = RADIUS_M): MotorBackend(wheel_radius_m) {}
+
     float velocity = 0.0f;
     MotorFault fault = MotorFault::NONE;
     bool enabled = false;
@@ -49,12 +59,13 @@ struct FakeMotor : MotorBackend {
     bool is_on() const override { return enabled; }
     void update() override {}
     void set_voltage_point(float volts) override { voltage = volts; }
-    void set_speed_target(float linear_m_s) override { target = linear_m_s; }
     void run_speed_loop(float) override {}
-    void set_wheel_radius(float) override {}
     void set_velocity_pid(const PIDConfig&) override {}
     float get_velocity() const override { return velocity; }
     MotorFault get_fault() const override { return fault; }
+
+protected:
+    void set_wheel_speed_target(float target_rad_s) override { target = target_rad_s; }
 };
 
 std::string take_tx() {
@@ -89,7 +100,7 @@ void send_slow(FakeMotor& motor, const std::string& text, size_t chunk) {
 void test_setpoints(FakeMotor& motor) {
     send(motor, "T0.5\r\n");
     CHECK(take_tx() == "T=0.500\r\n");
-    CHECK(motor.target == 0.5f);
+    CHECK(motor.target == wheel_rad_s(0.5f));
 
     send(motor, "Q2.25\n");
     CHECK(take_tx() == "Q=2.250\r\n");
@@ -97,10 +108,26 @@ void test_setpoints(FakeMotor& motor) {
 
     send(motor, "T-1.25\n");
     CHECK(take_tx() == "T=-1.250\r\n");
-    CHECK(motor.target == -1.25f);
+    CHECK(motor.target == wheel_rad_s(-1.25f));
 
     send(motor, "T12.3456\n");
     CHECK(take_tx() == "T=12.346\r\n");
+}
+
+void test_speed_target_uses_wheel_radius(FakeMotor& motor) {
+    motor.set_wheel_radius(0.1f);
+    send(motor, "T0.5\n");
+    CHECK(take_tx() == "T=0.500\r\n");
+    CHECK(std::abs(motor.target - 5.0f) < 1e-4f);
+
+    motor.velocity = 10.0f;
+    CHECK(std::abs(motor.get_linear_velocity() - 1.0f) < 1e-4f);
+    motor.velocity = 0.0f;
+
+    motor.set_wheel_radius(RADIUS_M);
+    send(motor, "T0.5\n");
+    CHECK(take_tx() == "T=0.500\r\n");
+    CHECK(motor.target == wheel_rad_s(0.5f));
 }
 
 void test_enable(FakeMotor& motor) {
@@ -207,7 +234,7 @@ void test_rx_overflow(FakeMotor& motor) {
 
     send(motor, "T9.5\n");
     CHECK(take_tx() == "T=9.500\r\n");
-    CHECK(motor.target == 9.5f);
+    CHECK(motor.target == wheel_rad_s(9.5f));
 
     send(motor, "X\n");
     take_tx();
@@ -301,6 +328,7 @@ int main() {
     CHECK(take_tx() == "M=0\r\n");
 
     test_setpoints(motor);
+    test_speed_target_uses_wheel_radius(motor);
     test_enable(motor);
     test_zero(motor);
     test_status(motor);

@@ -278,9 +278,8 @@ void in_loop_reporting(millis_t current_t) {
         static CanardTransferID velocity_transfer_id = 0;
         get_interface()->send_msg<Real32>(&velocity_msg, VELOCITY_PORT + node_id, &velocity_transfer_id);
 
-        // Linear wheel speed from angular velocity and wheel radius: v = w * r.
         Real32 speed_msg = {};
-        speed_msg.value = angular_velocity * wheel_radius;  // m/s
+        speed_msg.value = motor->get_linear_velocity();
         static CanardTransferID speed_transfer_id = 0;
         get_interface()->send_msg<Real32>(&speed_msg, LINEAR_SPEED_PORT + node_id, &speed_transfer_id);
 

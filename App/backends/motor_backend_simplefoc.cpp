@@ -106,7 +106,6 @@ private:
     BaseInverter& inverter;
     BLDCDriver3PWM driver;
     BLDCMotor motor;
-    float wheel_radius;
     PIDConfig velocity_pid;
     bool speed_mode = false;
     float voltage_target = 0.0f;
@@ -141,11 +140,11 @@ public:
         const PIDConfig& pid_config,
         float wheel_radius_m
     ):
+        MotorBackend(wheel_radius_m),
         sensor(hall),
         inverter(inverter_),
         driver(PIN_INH_A, PIN_INH_B, PIN_INH_C, PIN_INL_A, PIN_INL_B, PIN_INL_C),
         motor(drive_info.common.ppairs),
-        wheel_radius(wheel_radius_m),
         velocity_pid(pid_config)
     {
         sensor.set_velocity_scale(1.0f / (float)drive_info.common.gear_ratio);
@@ -272,23 +271,10 @@ public:
         voltage_target = volts;
     }
 
-    void set_speed_target(float linear_m_s) override {
-        if (!speed_mode) {
-            speed_mode = true;
-            motor.controller = MotionControlType::velocity;
-            motor.PID_velocity.reset();
-        }
-        speed_target = linear_m_s / wheel_radius;
-    }
-
     void run_speed_loop(float) override {
         if (speed_mode) {
             motor.move(speed_target);
         }
-    }
-
-    void set_wheel_radius(float radius_m) override {
-        wheel_radius = radius_m;
     }
 
     void set_velocity_pid(const PIDConfig& config) override {
@@ -302,6 +288,16 @@ public:
 
     MotorFault get_fault() const override {
         return fault;
+    }
+
+protected:
+    void set_wheel_speed_target(float wheel_rad_s) override {
+        if (!speed_mode) {
+            speed_mode = true;
+            motor.controller = MotionControlType::velocity;
+            motor.PID_velocity.reset();
+        }
+        speed_target = wheel_rad_s;
     }
 };
 

@@ -17,6 +17,15 @@ iteration, runs the speed loop from the fixed 200 Hz slot, and reports
 velocity / encoder count / faults identically. `make_motor_backend()` is defined
 by the single backend translation unit CMake compiles in.
 
+Speed crosses `MotorBackend` in wheel units only: `set_speed_target()` takes the
+wheel linear speed in m/s, the façade divides by the wheel radius and hands the
+backend a wheel angular set-point (`set_wheel_speed_target()`, rad/s), and
+`get_linear_velocity()` multiplies the reported wheel rad/s back. A backend and
+its regulator therefore work purely in wheel rad/s — the velocity-PID gains are
+V per rad/s (A per rad/s for `voltbro-foc`) and stay valid when the wheel
+diameter changes over the config topic. Every command source (CAN speed topic,
+serial `T`, the cart runtime) speaks m/s.
+
 ```sh
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
 ninja -C build

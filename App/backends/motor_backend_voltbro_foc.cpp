@@ -16,7 +16,6 @@ namespace tuning = motor_tuning;
 class VoltbroFocBackend final: public MotorBackend {
 private:
     FOC motor;
-    float wheel_radius;
     micros_t last_update = 0;
     bool update_scheduled = false;
     bool speed_mode = false;
@@ -32,6 +31,7 @@ public:
         const PIDConfig& velocity_pid,
         float wheel_radius_m
     ):
+        MotorBackend(wheel_radius_m),
         motor(
             tuning::foc_period_s,
             FiltersConfig {
@@ -48,8 +48,7 @@ public:
             htim,
             hall,
             inverter
-        ),
-        wheel_radius(wheel_radius_m)
+        )
     {
         motor.update_control_config(PIDConfig(velocity_pid));
     }
@@ -113,20 +112,8 @@ public:
         motor.set_voltage_point(volts);
     }
 
-    void set_speed_target(float linear_m_s) override {
-        if (!speed_mode) {
-            motor.reset_control_regulator();
-            speed_mode = true;
-        }
-        motor.set_velocity_point(linear_m_s / wheel_radius);
-    }
-
     void run_speed_loop(float) override {
         // The FOC regulates velocity inside update(), at its own control rate.
-    }
-
-    void set_wheel_radius(float radius_m) override {
-        wheel_radius = radius_m;
     }
 
     void set_velocity_pid(const PIDConfig& config) override {
@@ -139,6 +126,15 @@ public:
 
     MotorFault get_fault() const override {
         return fault;
+    }
+
+protected:
+    void set_wheel_speed_target(float wheel_rad_s) override {
+        if (!speed_mode) {
+            motor.reset_control_regulator();
+            speed_mode = true;
+        }
+        motor.set_velocity_point(wheel_rad_s);
     }
 };
 
