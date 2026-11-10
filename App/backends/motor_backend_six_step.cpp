@@ -106,6 +106,10 @@ protected:
         }
         speed.set_target_velocity(wheel_rad_s);
     }
+
+    void reset_speed_regulator() override {
+        speed.reset();
+    }
 };
 
 }

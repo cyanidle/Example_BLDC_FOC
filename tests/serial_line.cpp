@@ -47,6 +47,7 @@ struct FakeMotor : MotorBackend {
     bool enabled = false;
     float target = 0.0f;
     float voltage = 0.0f;
+    int regulator_resets = 0;
 
     const char* name() const override { return "fake"; }
     HAL_StatusTypeDef init() override { return HAL_OK; }
@@ -67,6 +68,7 @@ struct FakeMotor : MotorBackend {
 
 protected:
     void set_wheel_speed_target(float target_rad_s) override { target = target_rad_s; }
+    void reset_speed_regulator() override { regulator_resets += 1; }
 };
 
 std::string take_tx() {
@@ -89,6 +91,12 @@ void send(FakeMotor& motor, const std::string& line) {
     pump(motor);
 }
 
+// The façade ramps the applied set-point towards the commanded one, so a step
+// command reaches the backend only after enough speed-loop periods.
+void settle(FakeMotor& motor) {
+    motor.apply_speed_ramp(10.0f);
+}
+
 // Feeds in chunks with a poll in between, the way the real main loop drains the
 // receive ring while a long line is still arriving.
 void send_slow(FakeMotor& motor, const std::string& text, size_t chunk) {
@@ -101,6 +109,7 @@ void send_slow(FakeMotor& motor, const std::string& text, size_t chunk) {
 void test_setpoints(FakeMotor& motor) {
     send(motor, "T0.5\r\n");
     CHECK(take_tx() == "T=0.500\r\n");
+    settle(motor);
     CHECK(motor.target == wheel_rad_s(0.5f));
 
     send(motor, "Q2.25\n");
@@ -109,6 +118,7 @@ void test_setpoints(FakeMotor& motor) {
 
     send(motor, "T-1.25\n");
     CHECK(take_tx() == "T=-1.250\r\n");
+    settle(motor);
     CHECK(motor.target == wheel_rad_s(-1.25f));
 
     send(motor, "T12.3456\n");
@@ -119,6 +129,7 @@ void test_speed_target_uses_wheel_radius(FakeMotor& motor) {
     motor.set_wheel_radius(0.1f);
     send(motor, "T0.5\n");
     CHECK(take_tx() == "T=0.500\r\n");
+    settle(motor);
     CHECK(std::abs(motor.target - 5.0f) < 1e-4f);
 
     motor.velocity = 10.0f;
@@ -126,8 +137,11 @@ void test_speed_target_uses_wheel_radius(FakeMotor& motor) {
     motor.velocity = 0.0f;
 
     motor.set_wheel_radius(RADIUS_M);
+    send(motor, "T0\n");  // a radius change alone does not re-derive the set-point
+    take_tx();
     send(motor, "T0.5\n");
     CHECK(take_tx() == "T=0.500\r\n");
+    settle(motor);
     CHECK(motor.target == wheel_rad_s(0.5f));
 }
 
@@ -145,8 +159,10 @@ void test_zero(FakeMotor& motor) {
     send(motor, "T0.4\n");
     send(motor, "Q3\n");
     take_tx();
+    const int resets_before = motor.regulator_resets;
     send(motor, "X\n");
     CHECK(take_tx() == "OK\r\n");
+    CHECK(motor.regulator_resets == resets_before + 1);
     CHECK(motor.target == 0.0f);
     CHECK(motor.voltage == 0.0f);
 }
@@ -235,6 +251,7 @@ void test_rx_overflow(FakeMotor& motor) {
 
     send(motor, "T9.5\n");
     CHECK(take_tx() == "T=9.500\r\n");
+    settle(motor);
     CHECK(motor.target == wheel_rad_s(9.5f));
 
     send(motor, "X\n");

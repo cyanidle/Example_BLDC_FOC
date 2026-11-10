@@ -90,7 +90,9 @@ void line_fixed(Line& line, float value, unsigned decimals) {
         return;
     }
 
-    static const long scale_by_decimals[] = {1, 10, 100, 1000};
+    // Room for a gain as small as 0.0002: four decimals is not enough to tell
+    // it from zero on a read-back.
+    static const long scale_by_decimals[] = {1, 10, 100, 1000, 10000, 100000, 1000000};
     if (decimals >= sizeof(scale_by_decimals) / sizeof(scale_by_decimals[0])) {
         decimals = sizeof(scale_by_decimals) / sizeof(scale_by_decimals[0]) - 1;
     }
@@ -492,7 +494,7 @@ void serial_line_debug(const char* label, float value) {
     line_text(line, "# ");
     line_text(line, label);
     line_text(line, " ");
-    line_fixed(line, value, 3);
+    line_fixed(line, value, 4);
     line_finish(line);
 }
 

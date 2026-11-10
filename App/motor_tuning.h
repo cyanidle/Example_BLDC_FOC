@@ -39,7 +39,9 @@ inline PIDConfig default_velocity_pid_config() {
         .kp = 0.5f,               // V / (rad/s)
         .ki = 0.1f,               // V / (rad/s * s)
         .kd = 0.0f,
-        .integral_error_lim = 10.0f,
+        // Error-domain clamp: the volts the integral may add are ki * this, so
+        // 100 * 0.1 = 10 V — the same value config_defs.lua shows as i_limit.
+        .integral_error_lim = 100.0f,
         .max_output = 24.0f,      // V
         .min_output = -24.0f
     };

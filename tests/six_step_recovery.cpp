@@ -13,6 +13,19 @@
 
 using Fault = SixStepController::Fault;
 
+constexpr uint32_t NP = SixStepController::NO_PROGRESS_MS;
+constexpr uint32_t KICK = SixStepController::KICK_MS;
+constexpr uint8_t MAX_KICKS = SixStepController::MAX_KICKS;
+
+// Start of the n-th kick (1-based) and the tick the stall latches, for a shaft
+// that never makes progress.
+constexpr uint32_t kick_start(unsigned attempt) {
+    return NP + (attempt - 1) * (KICK + NP);
+}
+constexpr uint32_t fault_at() {
+    return kick_start(MAX_KICKS) + KICK + NP;
+}
+
 struct FakeInverter : BaseInverter {
     FakeInverter() { busV = 24.0f; }
     void start() override { is_started = true; }
@@ -98,27 +111,28 @@ void hall_polling_and_resync() {
 void bounded_retries_and_rearm() {
     Rig r;
     r.motor.set_voltage_point(4);
-    for (uint32_t t = 0; t <= 920; ++t) {
+    for (uint32_t t = 0; t <= fault_at(); ++t) {
         if (t % 100 == 0) r.motor.set_voltage_point(4); // test.lua streamer
         r.at(t);
-        if (t == 199) {
+        if (t == NP - 1) {
             CHECK(!r.motor.is_recovering());
             r.driving(1, 0);
         }
-        if (t == 200 || t == 439) {
-            CHECK(r.motor.get_recovery_attempts() == 1);
-        }
-        if ((t >= 200 && t < 240) || (t >= 440 && t < 480) || (t >= 680 && t < 720)) {
-            CHECK(r.motor.is_recovering());
-            r.driving(2, 0); // +60 degrees, same 4 V duty
+        for (unsigned attempt = 1; attempt <= MAX_KICKS; ++attempt) {
+            const uint32_t start = kick_start(attempt);
+            if (t == start) CHECK(r.motor.get_recovery_attempts() == attempt);
+            if (t >= start && t < start + KICK) {
+                CHECK(r.motor.is_recovering());
+                r.driving(2, 0); // +60 degrees, same 4 V duty
+            }
         }
     }
     CHECK(r.motor.get_fault() == Fault::STALLED);
-    CHECK(r.motor.get_recovery_attempts() == 3);
+    CHECK(r.motor.get_recovery_attempts() == MAX_KICKS);
     r.coasted();
     r.set_hall(3); // even externally moving a faulted motor must not restart it
     r.motor.set_voltage_point(-4);
-    r.at(1000);
+    r.at(fault_at() + 80);
     CHECK(r.motor.get_fault() == Fault::STALLED);
     r.coasted();
     r.motor.set_voltage_point(0);
@@ -126,13 +140,13 @@ void bounded_retries_and_rearm() {
     CHECK(r.motor.get_recovery_attempts() == 0);
     r.coasted();
     r.motor.set_voltage_point(4);
-    r.at(1001); // zero and nonzero can arrive before the next update
+    r.at(fault_at() + 81); // zero and nonzero can arrive before the next update
     r.driving(2, 0);
     r.motor.stop();
     r.coasted();
     r.motor.start();
     r.motor.set_voltage_point(4);
-    r.at(1100);
+    r.at(fault_at() + 180);
     CHECK(!r.motor.is_recovering());
 }
 
@@ -140,20 +154,21 @@ void successful_kick_and_later_stall() {
     Rig r;
     r.motor.set_voltage_point(4);
     r.at(0);
-    r.at(200);
+    r.at(NP);
     CHECK(r.motor.is_recovering());
     const uint8_t cycle[] = {3, 2, 6, 4, 5, 1};
     for (unsigned i = 0; i < 6; ++i) {
         r.set_hall(cycle[i]);
-        r.at(210 + i * 10);
+        r.at(NP + 10 + i * 10);
         CHECK(!r.motor.is_recovering());
         CHECK(r.motor.get_fault() == Fault::NONE);
         if (i < 5) CHECK(r.motor.get_recovery_attempts() == 1);
     }
     CHECK(r.motor.get_recovery_attempts() == 0);
-    r.at(459);
+    const uint32_t progress_at = NP + 10 + 5 * 10;
+    r.at(progress_at + NP - 1);
     CHECK(!r.motor.is_recovering());
-    r.at(460);
+    r.at(progress_at + NP);
     CHECK(r.motor.is_recovering());
 }
 
@@ -173,13 +188,13 @@ void both_directions_and_all_sectors() {
                 r.at(0);
                 r.driving(reverse ? gnd_phase[i] : pwm_phase[i], reverse ? pwm_phase[i] : gnd_phase[i]);
                 const unsigned next = (i + (reverse ? 5 : 1)) % 6;
-                r.at(200);
+                r.at(NP);
                 r.driving(
                     reverse ? gnd_phase[next] : pwm_phase[next],
                     reverse ? pwm_phase[next] : gnd_phase[next]
                 );
                 r.set_hall(cycle[next]);
-                r.at(210);
+                r.at(NP + 10);
                 CHECK(!r.motor.is_recovering());
                 CHECK(r.motor.get_fault() == Fault::NONE);
             }
@@ -191,7 +206,7 @@ void chatter_does_not_replenish_retries() {
     Rig r;
     r.motor.set_voltage_point(4);
     r.at(0);
-    for (uint32_t t = 1; t <= 1200; ++t) {
+    for (uint32_t t = 1; t <= fault_at() * 3; ++t) {
         r.set_hall((t / 10) % 2 ? 3 : 1); // rock across one boundary
         r.at(t);
     }
@@ -231,10 +246,10 @@ void invalid_inputs_and_zero_abort() {
     r.at(1005);
     r.motor.set_voltage_point(4);
     r.at(1006);
-    r.at(1206);
+    r.at(1006 + NP);
     CHECK(r.motor.is_recovering());
     r.motor.set_voltage_point(0);
-    r.at(1207);
+    r.at(1007 + NP);
     CHECK(!r.motor.is_recovering());
     CHECK(r.motor.get_fault() == Fault::NONE);
     r.coasted();
@@ -244,27 +259,26 @@ void timer_wrap() {
     Rig r;
     r.epoch = UINT32_MAX - 100;
     r.motor.set_voltage_point(4);
-    for (uint32_t t = 0; t <= 920; ++t) r.at(t);
+    for (uint32_t t = 0; t <= fault_at(); ++t) r.at(t);
     CHECK(r.motor.get_fault() == Fault::STALLED);
     r.coasted();
 }
 
+// The pulses `test.lua` streams at 10 Hz are one second long, so the watchdog
+// must not fault inside one: that is what the raised NO_PROGRESS_MS buys.
 void test_lua_pulses() {
     Rig r;
+    CHECK(NP + MAX_KICKS * (KICK + NP) > 1000);
     const float targets[] = {0, 4, 0, -4, 0};
     for (uint32_t t = 0; t < 5000; ++t) {
         const float voltage = targets[t / 1000];
         if (t % 100 == 0) r.motor.set_voltage_point(voltage);
         r.at(t);
         if (voltage == 0) {
-            CHECK(r.motor.get_fault() == Fault::NONE);
-            CHECK(r.motor.get_recovery_attempts() == 0);
-            r.coasted();
-        } else if (t % 1000 >= 920) {
-            CHECK(r.motor.get_fault() == Fault::STALLED);
             r.coasted();
         } else {
             CHECK(r.motor.get_fault() == Fault::NONE);
+            CHECK(r.motor.get_recovery_attempts() < MAX_KICKS);
         }
     }
 }

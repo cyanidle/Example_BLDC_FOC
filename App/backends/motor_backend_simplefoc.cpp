@@ -314,6 +314,10 @@ protected:
         }
         speed_target = wheel_rad_s;
     }
+
+    void reset_speed_regulator() override {
+        motor.PID_velocity.reset();
+    }
 };
 
 }

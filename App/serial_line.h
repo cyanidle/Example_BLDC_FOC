@@ -15,6 +15,9 @@ class MotorBackend;
  *   T<float>   target wheel speed, m/s       -> T=<value>
  *   Q<float>   open-loop voltage, V          -> Q=<value>
  *   E<0|1>     driver enable                 -> E=<0|1>
+ *              (the only way to change it: a module boots enabled and no
+ *               Cyphal command, config write or register access enables or
+ *               disables the bridge)
  *   X          zero both set-points          -> OK
  *   M<rate>    telemetry rate in Hz, 0 = off -> M=<rate>
  *              (off until asked; max 100 Hz)

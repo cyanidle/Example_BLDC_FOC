@@ -140,6 +140,10 @@ protected:
         }
         motor.set_velocity_point(wheel_rad_s);
     }
+
+    void reset_speed_regulator() override {
+        motor.reset_control_regulator();
+    }
 };
 
 }

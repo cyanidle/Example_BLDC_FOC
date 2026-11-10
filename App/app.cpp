@@ -82,9 +82,10 @@ std::unique_ptr<MotorBackend> motor;
 /* ---- Runtime, CAN-tunable parameters (see ConfigSub / CONFIG_PORT below) ----
  * These have safe defaults so the node runs before any config message arrives;
  * the wheel master overwrites them at run time. */
-// Boot-time wheel radius, m (0.1 m wheel diameter) until the config topic sends
-// one; the live radius lives in the motor façade.
-constexpr float BOOT_WHEEL_RADIUS_M = 0.05f;
+// Boot-time wheel radius, m (0.32 m wheel diameter, the cart's wheel) until the
+// config topic or a stored EEPROM value replaces it; the live radius lives in
+// the motor façade. Keep it in sync with config_defs.lua's wheel_diameter.
+constexpr float BOOT_WHEEL_RADIUS_M = 0.16f;
 
 // Default velocity-PID gains (see motor_tuning.h for the per-implementation
 // values). Overridden at run time by the config topic.
@@ -92,6 +93,60 @@ static PIDConfig make_default_pid_config() {
     return motor_tuning::default_velocity_pid_config();
 }
 static PIDConfig velocity_pid_config = make_default_pid_config();
+
+// Integral anti-windup, V: the largest voltage the integral term may add. The
+// regulator clamps the accumulated error (rad/s * s) instead, so the operator
+// value is divided by Ki on every gain change.
+static float pid_i_limit_v = velocity_pid_config.ki * velocity_pid_config.integral_error_lim;
+
+static float integral_error_limit(float limit_v, float ki) {
+    return ki > 0.0f ? limit_v / ki : 0.0f;
+}
+
+/* ---- Wheel parameters persisted in the on-board EEPROM ---------------------
+ * The modules kept their runtime config in RAM only, so a power cycle reverted a
+ * wheel to the compiled-in defaults. Every applied config change is written back
+ * after CONFIG_SAVE_DEBOUNCE_MS of quiet — a GUI session sends value after value,
+ * and one EEPROM write per keystroke would wear the cell out. The magic and the
+ * version reject an erased (0xFF) or foreign EEPROM.
+ *
+ * Version 2 changed `i_limit` from the regulator's error-domain clamp
+ * (rad/s * s) to the operator-facing integral voltage, V — a version-1 record
+ * would be read in the wrong unit, so it is rejected and the module falls back
+ * to its compiled defaults. */
+struct StoredWheelConfig {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t reserved;
+    float wheel_diameter_m;
+    float kp;
+    float ki;
+    float kd;
+    float i_limit;  // V, the largest integral contribution to the output
+};
+static constexpr uint32_t WHEEL_CONFIG_MAGIC = 0x314E4C47u;  // "GLN1"
+static constexpr uint16_t WHEEL_CONFIG_VERSION = 2;
+static constexpr uint16_t WHEEL_CONFIG_ADDRESS = 0;
+static constexpr millis_t CONFIG_SAVE_DEBOUNCE_MS = 1000;
+
+// 0 = nothing pending; otherwise millis_32() of the last change.
+static millis_t config_changed_at = 0;
+
+static void load_stored_wheel_config();
+static void save_stored_wheel_config();
+
+static void mark_config_changed() {
+    const millis_t now = millis_32();
+    config_changed_at = now ? now : 1;  // 0 is the "clean" sentinel
+}
+
+/// Write the pending config once the operator has stopped editing for a second.
+static void service_config_persistence(millis_t now_ms) {
+    if (!config_changed_at) return;
+    if ((millis_t)(now_ms - config_changed_at) < CONFIG_SAVE_DEBOUNCE_MS) return;
+    config_changed_at = 0;
+    save_stored_wheel_config();
+}
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
     if (GPIO_Pin == ENC_1_Pin || GPIO_Pin == ENC_2_Pin || GPIO_Pin == ENC_3_Pin) {
@@ -107,8 +162,9 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
     // cached state is meaningless until we re-sample the pins here.
     hall_sensor.resync();
 
-    // The EEPROM is only probed for presence; nothing is read from it later, so
-    // a missing/stuck EEPROM must not block motor initialization forever.
+    // The EEPROM is probed for presence and, when it holds a stored wheel
+    // config, that config is restored below; a missing or stuck EEPROM must not
+    // block motor initialization forever.
     {
         const millis_t eeprom_wait_start = millis_32();
         while (!eeprom.is_connected() && (millis_32() - eeprom_wait_start) < 500) {
@@ -129,11 +185,17 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
     serial_line_init();
     serial_line_debug("boot: motor init");
     HAL_IMPORTANT(motor->init())
-    // Boot in standby: nothing energizes the bridge until something enables it
-    // (the first Cyphal command, the motor.is_on register write or the serial E1
-    // command).
-    serial_line_debug("boot: motor standby");
-    HAL_IMPORTANT(motor->stop())
+    // The bridge comes up enabled: `motor.start()` pulses the driver's enable
+    // line and leaves it asserted. The debug serial channel owns that state
+    // (`E0`/`E1`) — no Cyphal command, config write or register access changes
+    // it. An enabled wheel does not move on its own: the set-point is zero at
+    // boot and the six-step controller coasts while the target voltage is zero.
+    serial_line_debug("boot: motor enabled");
+    HAL_IMPORTANT(motor->start())
+
+    // Last saved parameters win over the compiled-in defaults, so a wheel that
+    // was tuned through the config GUI keeps its tuning across a power cycle.
+    load_stored_wheel_config();
 
     serial_line_debug("boot: serial channel up");
 
@@ -146,7 +208,9 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
         micros_t now = micros_64();
 
         EACH_N_MICROS(now, pid_time, PID_PERIOD_US, {
-            motor->run_speed_loop((float)PID_PERIOD_US * 1e-6f);
+            const float dt = (float)PID_PERIOD_US * 1e-6f;
+            motor->apply_speed_ramp(dt);
+            motor->run_speed_loop(dt);
         })
 
         motor->update();
@@ -154,6 +218,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
         serial_line_poll(*motor);
 
         const millis_t now_ms = millis_32();
+        service_config_persistence(now_ms);
 
         static millis_t fault_check_time = 0;
         if ((now_ms - fault_check_time) >= 50) {
@@ -221,12 +286,17 @@ static constexpr CanardPortID CONFIG_PORT = 4100;     // runtime config (see Con
  *     value = numerator / denominator
  * to the parameter selected by `id`. Sending one rational at a time lets any
  * float be set at any moment without a fixed-layout array.
- * Keep this enum in sync with config_defs.lua in the repo root. */
+ * Keep this enum in sync with config_defs.lua in the repo root.
+ *
+ * The velocity gains are in the regulator's own unit — shaft rad/s, not wheel
+ * m/s. The façade converts the set-point and the feedback at its edge, the
+ * gains are handed to the backend untouched, so they are V/(rad/s) on the
+ * six-step and SimpleFOC builds and A/(rad/s) on the libvoltbro FOC one. */
 enum ConfigId : int32_t {
     CFG_WHEEL_DIAMETER = 0,  // m,            drive-wheel diameter (rad/s <-> m/s)
     CFG_PID_KP        = 1,   // V/(rad/s),    proportional gain
     CFG_PID_KI        = 2,   // V/(rad/s * s),integral gain
-    CFG_PID_KD        = 3,   // V/(rad/s / s),derivative gain
+    CFG_PID_KD        = 3,   // V*s/(rad/s),  derivative gain
     CFG_PID_I_LIMIT   = 4,   // V,            integral anti-windup clamp
 };
 
@@ -236,6 +306,7 @@ static void apply_config_value(int32_t id, float value) {
         if (value > 0.0f && motor) {
             motor->set_wheel_radius(value * 0.5f);
         }
+        mark_config_changed();
         return;
     }
 
@@ -244,13 +315,72 @@ static void apply_config_value(int32_t id, float value) {
         case CFG_PID_KP:        pid.kp = value; break;
         case CFG_PID_KI:        pid.ki = value; break;
         case CFG_PID_KD:        pid.kd = value; break;
-        case CFG_PID_I_LIMIT:   pid.integral_error_lim = value; break;
+        case CFG_PID_I_LIMIT:
+            if (value < 0.0f) return;
+            pid_i_limit_v = value;
+            break;
         default: return;  // unknown id: ignore
     }
+    // Ki may have just changed, so the error-domain clamp is re-derived from
+    // the volt-domain one every time.
+    pid.integral_error_lim = integral_error_limit(pid_i_limit_v, pid.ki);
     velocity_pid_config = pid;
     if (motor) {
         motor->set_velocity_pid(velocity_pid_config);
     }
+    mark_config_changed();
+}
+
+/// Restore the parameters the wheel ran with before the last power cycle.
+static void load_stored_wheel_config() {
+    if (!eeprom.is_connected()) {
+        serial_line_debug("eeprom: absent, wheel config stays at defaults");
+        return;
+    }
+    StoredWheelConfig stored{};
+    if (eeprom.read<StoredWheelConfig>(&stored, WHEEL_CONFIG_ADDRESS) != HAL_OK) {
+        serial_line_debug("eeprom: read failed, wheel config stays at defaults");
+        return;
+    }
+    if (stored.magic != WHEEL_CONFIG_MAGIC || stored.version != WHEEL_CONFIG_VERSION) {
+        serial_line_debug("eeprom: nothing stored, wheel config stays at defaults");
+        return;
+    }
+    apply_config_value(CFG_WHEEL_DIAMETER, stored.wheel_diameter_m);
+    apply_config_value(CFG_PID_KP, stored.kp);
+    apply_config_value(CFG_PID_KI, stored.ki);
+    apply_config_value(CFG_PID_KD, stored.kd);
+    apply_config_value(CFG_PID_I_LIMIT, stored.i_limit);
+    config_changed_at = 0;  // restored, not an edit that needs writing back
+    serial_line_debug("eeprom: wheel config restored");
+    serial_line_debug("eeprom: wheel diameter", stored.wheel_diameter_m);
+    serial_line_debug("eeprom: kp", stored.kp);
+    serial_line_debug("eeprom: ki", stored.ki);
+    serial_line_debug("eeprom: kd", stored.kd);
+    serial_line_debug("eeprom: i_limit", stored.i_limit);
+}
+
+/// Persist the live wheel parameters. A failed write is logged, not fatal: the
+/// drive keeps running on the values it already has.
+static void save_stored_wheel_config() {
+    if (!eeprom.is_connected()) {
+        serial_line_debug("eeprom: absent, wheel config not saved");
+        return;
+    }
+    StoredWheelConfig stored{};
+    stored.magic = WHEEL_CONFIG_MAGIC;
+    stored.version = WHEEL_CONFIG_VERSION;
+    stored.reserved = 0;
+    stored.wheel_diameter_m = (motor ? motor->get_wheel_radius() : BOOT_WHEEL_RADIUS_M) * 2.0f;
+    stored.kp = velocity_pid_config.kp;
+    stored.ki = velocity_pid_config.ki;
+    stored.kd = velocity_pid_config.kd;
+    stored.i_limit = pid_i_limit_v;
+    if (eeprom.write<StoredWheelConfig>(&stored, WHEEL_CONFIG_ADDRESS) != HAL_OK) {
+        serial_line_debug("eeprom: write failed");
+        return;
+    }
+    serial_line_debug("eeprom: wheel config saved");
 }
 
 void app_apply_config(int32_t id, float value) {
@@ -286,16 +416,10 @@ void in_loop_reporting(millis_t current_t) {
     }
 }
 
-// A command enables too: a later command overrides an explicit motor.is_on = 0.
-static void enable_on_command() {
-    if (!motor->is_on()) {
-        motor->set_state(true);
-    }
-}
-
 // Target wheel speed command, m/s. Enters closed-loop speed regulation; the
 // backend resets its regulator when the mode changes so a stale integral from a
-// previous set-point does not kick the motor.
+// previous set-point does not kick the motor. It does not enable: the enable
+// state belongs to the debug serial channel.
 class SpeedCommandSub: public AbstractSubscription<Real32> {
 public:
     SpeedCommandSub(InterfacePtr interface, CanardPortID port_id): AbstractSubscription<Real32>(interface, port_id) {};
@@ -304,7 +428,6 @@ public:
             return;
         }
         serial_line_debug("can speed_cmd", msg.value);
-        enable_on_command();
         motor->set_speed_target(msg.value);  // m/s
     }
 };
@@ -319,7 +442,6 @@ public:
             return;
         }
         serial_line_debug("can direct_cmd", msg.value);
-        enable_on_command();
         motor->set_voltage_point(msg.value);
     }
 };
@@ -377,21 +499,16 @@ void setup_subscriptions() {
             {
                 "motor.is_on",
                 [](
-                    const uavcan_register_Value_1_0& v_in,
+                    const uavcan_register_Value_1_0&,
                     uavcan_register_Value_1_0& v_out,
                     RegisterAccessResponse& response
                 ){
-                    // Only a write (bit value, tag 3) changes the motor state.
-                    // A read carries an empty value; it must just report the
-                    // current state — calling set_state() here would disable the
-                    // motor on every register read/list and make it ignore all
-                    // setpoint commands.
-                    if (v_in._tag_ == 3) {
-                        motor->set_state(v_in.bit.value.bitpacked[0] == 1);
-                    }
-
-                    response.persistent = true;
-                    response._mutable = true;
+                    // Read-only: the enable state is owned by the debug serial
+                    // channel (`E0`/`E1`), so a write here is not applied and
+                    // the register reports itself immutable. A read just
+                    // reports the current state.
+                    response.persistent = false;
+                    response._mutable = false;
                     v_out._tag_ = 3;
                     v_out.bit.value.bitpacked[0] = motor->is_on();
                     v_out.bit.value.count = 1;
