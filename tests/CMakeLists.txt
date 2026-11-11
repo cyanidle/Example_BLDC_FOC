@@ -49,6 +49,16 @@ target_include_directories(loop_trace PRIVATE
 target_compile_options(loop_trace PRIVATE -Wall -Wextra -Wno-reorder)
 add_test(NAME loop_trace COMMAND loop_trace)
 
+add_executable(voltage_slew
+    voltage_slew.cpp
+)
+target_compile_features(voltage_slew PRIVATE cxx_std_20)
+target_include_directories(voltage_slew PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/../App
+)
+target_compile_options(voltage_slew PRIVATE -Wall -Wextra -Wno-reorder)
+add_test(NAME voltage_slew COMMAND voltage_slew)
+
 add_executable(serial_line
     serial_line.cpp
     ${CMAKE_CURRENT_LIST_DIR}/../App/serial_line.cpp

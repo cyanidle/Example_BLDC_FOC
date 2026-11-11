@@ -36,13 +36,12 @@ struct Sample {
 // Reasons a sample is marked. A sample carries the events that happened since
 // the previous one, so the dump reads as a timeline of what the loop noticed.
 enum Flag: uint8_t {
-    ANGLE_SNAP = 1u << 0,        // the angle tracker was yanked onto a sector edge
-    HALL_ILLEGAL = 1u << 1,      // a Hall transition no single step can explain
-    RATE_IMPLAUSIBLE = 1u << 2,  // a Hall rate sample outside the drive's range
-    GUARD_TRIP = 1u << 3,        // the current guard parked the bridge
-    SUPPLY_DERATE = 1u << 4,     // the rail left its window and the torque was cut
-    DRIVER_FAULT = 1u << 5,      // the gate driver asserted its FAULT line
-    TARGET_CLAMPED = 1u << 6,    // the speed target was clamped to the ceiling
+    HALL_ILLEGAL = 1u << 0,      // a Hall transition no single step can explain
+    RATE_IMPLAUSIBLE = 1u << 1,  // a Hall rate sample outside the drive's range
+    GUARD_TRIP = 1u << 2,        // the current guard parked the bridge
+    SUPPLY_DERATE = 1u << 3,     // the rail left its window and the torque was cut
+    DRIVER_FAULT = 1u << 4,      // the gate driver asserted its FAULT line
+    TARGET_CLAMPED = 1u << 5,    // the speed target was clamped to the ceiling
 };
 
 // Events the sample flags are derived from; absolute counts since boot. The
@@ -52,7 +51,6 @@ struct Counters {
     volatile uint32_t hall_illegal;
     volatile uint32_t hall_counted;
     volatile uint32_t rate_implausible;
-    volatile uint32_t angle_snap;
     volatile uint32_t guard_trips;
     volatile uint32_t derate_entries;
     volatile uint32_t driver_faults;
@@ -66,7 +64,7 @@ constexpr size_t DEPTH = 128;
 // Events that arm the automatic dump: each of them is the drive telling the
 // operator that something it cannot explain happened.
 constexpr uint8_t TRIGGER_FLAGS =
-    ANGLE_SNAP | HALL_ILLEGAL | RATE_IMPLAUSIBLE | GUARD_TRIP | DRIVER_FAULT;
+    HALL_ILLEGAL | RATE_IMPLAUSIBLE | GUARD_TRIP | SUPPLY_DERATE | DRIVER_FAULT;
 
 Counters& counters();
 

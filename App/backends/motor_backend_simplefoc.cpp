@@ -10,6 +10,7 @@
 #include "motor_limits.h"
 #include "motor_tuning.h"
 #include "serial_line.h"
+#include "voltage_slew.h"
 #include "BLDCMotor.h"
 #include "common/base_classes/CurrentSense.h"
 #include "common/base_classes/Sensor.h"
@@ -105,12 +106,12 @@ private:
     // treated as Hall jitter (motor side).
     float rate_limit_rad_s = 0.0f;
     // Loop-trace inputs (App/loop_trace.h): the last angle residual the tracker
-    // worked against, and how often the two failure modes fired — a snap means
-    // the estimate had to be yanked onto a sector boundary (the rotor is not
-    // where the count says), an implausible rate means an edge interval the
-    // drive's EMF could not have produced (a bounce, or an edge lost).
+    // worked against — the trace records the whole error history, so there is no
+    // angle counter (a per-call threshold cannot separate the ordinary
+    // post-edge catch-up from a real disagreement: 1640 of 1676 edges tripped a
+    // naive one on the bench) — and how often a rate sample was outside the
+    // drive's range.
     float last_error_rad = 0.0f;
-    uint32_t snap_count = 0;
     uint32_t implausible_rate_count = 0;
 
     static float wrap_2pi(float angle) {
@@ -129,7 +130,6 @@ public:
     // Diagnostics for the loop trace.
     float get_last_error_rad() const { return last_error_rad; }
     float get_tracked_angle_rad() const { return tracked_angle; }
-    uint32_t get_snap_count() const { return snap_count; }
     uint32_t get_implausible_rate_count() const { return implausible_rate_count; }
 
     // Ceiling a single rate sample may report, motor rad/s (see
@@ -185,12 +185,10 @@ public:
         if (error > half) {
             tracked_angle = wrap_2pi(centre - half);
             error = half;
-            ++snap_count;
         }
         else if (error < -half) {
             tracked_angle = wrap_2pi(centre + half);
             error = -half;
-            ++snap_count;
         }
         sector_centre = centre;
         const float gain = dt / (dt + tuning::simplefoc_hall_angle_tau_s);
@@ -380,7 +378,6 @@ private:
         counters.hall_illegal = halls.get_illegal_transitions();
         counters.hall_counted = halls.get_counted_edges();
         counters.rate_implausible = sensor.get_implausible_rate_count();
-        counters.angle_snap = sensor.get_snap_count();
         counters.guard_trips = guard_trip_count;
         counters.derate_entries = derate_entry_count;
         counters.driver_faults = driver_fault_count;
@@ -402,7 +399,6 @@ private:
         sample.bus_voltage_v = inverter.get_busV();
         sample.hall_raw = (uint8_t)halls.get_step();
         sample.flags = 0;
-        if (counters.angle_snap != trace_seen.angle_snap) sample.flags |= loop_trace::ANGLE_SNAP;
         if (counters.hall_illegal != trace_seen.hall_illegal) sample.flags |= loop_trace::HALL_ILLEGAL;
         if (counters.rate_implausible != trace_seen.rate_implausible) {
             sample.flags |= loop_trace::RATE_IMPLAUSIBLE;
@@ -872,19 +868,23 @@ public:
                         voltage_ceiling_v + tuning::simplefoc_voltage_ramp_v_s * dt_s
                     );
                 }
-                const float magnitude =
-                    std::min(std::abs(voltage_target), voltage_ceiling_v);
-                // A zero command is an operator stop, not a fault: slew it down
-                // at the gentle rate so the wheel follows the voltage down
-                // instead of the 0 V phase short braking it against its own
-                // back-EMF. The current limiter keeps the fast down-slew.
-                const bool stopping = voltage_target == 0.0f;
-                voltage_applied = ramp_towards(
+                const float requested_magnitude = std::abs(voltage_target);
+                const float magnitude = std::min(requested_magnitude, voltage_ceiling_v);
+                // A zero command is an operator stop, not a fault: shed it at
+                // the gentle rate so the wheel follows the voltage down instead
+                // of the 0 V phase short braking it against its own back-EMF.
+                // The same gentle rate covers a change of sign (a reversal
+                // through 0 V); only a drop the current ceiling forces uses the
+                // fast down-slew, and only while the sign is unchanged.
+                const bool ceiling_forced = magnitude < requested_magnitude;
+                voltage_applied = voltage_slew::slew(
                     voltage_applied,
                     std::copysign(magnitude, voltage_target),
-                    tuning::simplefoc_voltage_ramp_v_s * dt_s,
-                    (stopping ? tuning::simplefoc_voltage_stop_ramp_v_s
-                              : tuning::simplefoc_voltage_down_ramp_v_s) * dt_s
+                    tuning::simplefoc_voltage_ramp_v_s,
+                    ceiling_forced ? tuning::simplefoc_voltage_down_ramp_v_s
+                                   : tuning::simplefoc_voltage_stop_ramp_v_s,
+                    tuning::simplefoc_voltage_stop_ramp_v_s,
+                    dt_s
                 );
             }
             motor.move(voltage_applied);

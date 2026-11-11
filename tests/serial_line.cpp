@@ -93,6 +93,10 @@ struct FakeMotor : MotorBackend {
         return enabled;
     }
 
+    // The ceiling is a protected façade hook the real backends drive from their
+    // modulation limit; expose it so the test can exercise the clamp.
+    void set_ceiling(float m_s) { set_speed_ceiling(m_s); }
+
 protected:
     void set_wheel_speed_target(float target_rad_s) override { target = target_rad_s; }
     void reset_speed_regulator() override { regulator_resets += 1; }
@@ -508,7 +512,7 @@ void test_trace_counters_and_dump(FakeMotor& motor) {
     CHECK(dump.find("# T 123 e=") != std::string::npos);
     CHECK(dump.find(" im=3.50") != std::string::npos);
     CHECK(dump.find(" h=5") != std::string::npos);
-    CHECK(dump.find(" ev=2") != std::string::npos);
+    CHECK(dump.find(" ev=1") != std::string::npos);
     CHECK(dump.find("# trace end") != std::string::npos);
     // The dump unlocks the ring so the loop can fill it again.
     CHECK(!loop_trace::locked());
@@ -522,6 +526,57 @@ void test_trace_counters_and_dump(FakeMotor& motor) {
     loop_trace::push(sample);
     pump(motor);
     CHECK(take_tx().empty());
+}
+
+void test_speed_path_is_sign_symmetric(FakeMotor& motor) {
+    // The open-loop voltage channel had a sign asymmetry: a reversal took the
+    // current-limiting slew instead of the gentle one, so one direction ramped
+    // and the other kicked. This test pins the speed path down against the same
+    // class of bug: same command magnitude, same ramp, same clamp, mirrored.
+    motor.set_ceiling(1.0f);
+    motor.set_speed_ramp(2.0f);  // m/s^2, the façade default
+
+    // Ramp transient: one 100 ms period at 2 m/s^2 = 0.2 m/s, both signs.
+    for (float command : {0.6f, 0.2f}) {
+        const float expected = std::min(command, 0.2f);
+        motor.set_speed_target(0.0f);
+        motor.set_speed_target(command);
+        motor.apply_speed_ramp(0.1f);
+        const float plus = motor.get_applied_speed_target();
+        CHECK(std::abs(plus - expected) < 1e-6f);
+
+        motor.set_speed_target(0.0f);
+        motor.set_speed_target(-command);
+        motor.apply_speed_ramp(0.1f);
+        const float minus = motor.get_applied_speed_target();
+        CHECK(std::abs(minus + expected) < 1e-6f);
+        CHECK(std::abs(plus + minus) < 1e-6f);
+    }
+
+    // Clamp: symmetric about zero and flagged in both directions.
+    motor.set_speed_target(1.5f);
+    motor.apply_speed_ramp(10.0f);
+    CHECK(std::abs(motor.get_applied_speed_target() - 1.0f) < 1e-6f);
+    CHECK(motor.is_target_clamped());
+    CHECK(std::abs(motor.target - wheel_rad_s(1.0f)) < 1e-4f);
+
+    motor.set_speed_target(-1.5f);
+    motor.apply_speed_ramp(10.0f);
+    CHECK(std::abs(motor.get_applied_speed_target() + 1.0f) < 1e-6f);
+    CHECK(motor.is_target_clamped());
+    CHECK(std::abs(motor.target + wheel_rad_s(1.0f)) < 1e-4f);
+
+    // An in-range command clears the clamp, again in both directions.
+    for (float command : {0.5f, -0.5f}) {
+        motor.set_speed_target(command);
+        motor.apply_speed_ramp(10.0f);
+        CHECK(!motor.is_target_clamped());
+        CHECK(std::abs(motor.get_applied_speed_target() - command) < 1e-6f);
+    }
+
+    motor.set_speed_target(0.0f);
+    motor.set_ceiling(1000.0f);
+    motor.set_speed_ramp(2.0f);
 }
 
 }
@@ -569,6 +624,7 @@ int main() {
     test_config_readback(motor);
     test_lpf_ramp_alias_config(motor);
     test_trace_counters_and_dump(motor);
+    test_speed_path_is_sign_symmetric(motor);
 
     std::cout << "serial_line: all checks passed\n";
     return 0;

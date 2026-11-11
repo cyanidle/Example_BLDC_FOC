@@ -64,14 +64,16 @@ class MotorBackend;
  *               values arrive as "# simplefoc calibrate: ..." debug lines and
  *               the gains live until reboot. Zero the set-points first.)
  *   K          loop-trace event counters, one line -> "# K hall_bad=<n>
- *              hall_edges=<n> rate_bad=<n> angle_snap=<n> guard=<n>
- *              derate=<n> driver=<n> clamps=<n>"
+ *              hall_edges=<n> rate_bad=<n> guard=<n> derate=<n> driver=<n>
+ *              clamps=<n>"
  *              (Hall transitions no single step explains, counted edges,
- *               rate samples the drive could not have produced, times the
- *               angle estimate had to be snapped onto a sector boundary,
- *               guard trips, supply-derate entries, gate-driver faults and
- *               speed-target clamps: the counters that say whether a stutter
- *               came from the decoder, the tracker or the protection.)
+ *               rate samples the drive could not have produced, guard trips,
+ *               supply-derate entries, gate-driver faults and speed-target
+ *               clamps: the counters that say whether a stutter came from the
+ *               decoder, the protection or the voltage ceiling. The angle
+ *               estimate has no counter — the trace samples carry the error
+ *               directly, because a per-call threshold cannot separate the
+ *               ordinary post-edge catch-up from a real disagreement.)
  *   W          dump the loop trace now       -> "# trace: samples=<n> depth=128"
  *              then one "# T <ms> e=<deg> a=<deg> v=<rad/s> iq=<A> id=<A>
  *              im=<A> uq=<V> ud=<V> b=<V> h=<0..7> ev=<bits>" line per sample

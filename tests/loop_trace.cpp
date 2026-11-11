@@ -91,7 +91,6 @@ void test_counters_start_clear() {
     loop_trace::reset();
     const volatile loop_trace::Counters& counters = loop_trace::counters();
     CHECK(counters.hall_illegal == 0);
-    CHECK(counters.angle_snap == 0);
     CHECK(counters.guard_trips == 0);
     CHECK(counters.driver_faults == 0);
 }

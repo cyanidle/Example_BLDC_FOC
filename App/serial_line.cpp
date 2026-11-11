@@ -169,6 +169,14 @@ void tx_kick() {
     __set_PRIMASK(primask);
 }
 
+// Room left in the transmit ring, bytes. The trace dump paces itself by this:
+// several lines per poll pass outrun a 115200 baud link (the poll runs orders of
+// magnitude faster), and tx_write drops a whole message it cannot fit — which is
+// how the first dump lost 9 of every 10 samples.
+size_t tx_free_space() {
+    return TX_RING_SIZE - 1 - (tx_head + TX_RING_SIZE - tx_tail) % TX_RING_SIZE;
+}
+
 void tx_write(const char* text, size_t length) {
     if (length >= TX_RING_SIZE) {
         return;
@@ -342,8 +350,6 @@ void send_counters() {
     line_unsigned(line, counters.hall_counted);
     line_text(line, " rate_bad=");
     line_unsigned(line, counters.rate_implausible);
-    line_text(line, " angle_snap=");
-    line_unsigned(line, counters.angle_snap);
     line_text(line, " guard=");
     line_unsigned(line, counters.guard_trips);
     line_text(line, " derate=");
@@ -373,9 +379,15 @@ void trace_service() {
     if (!trace_dump.active) {
         return;
     }
-    // Four ~90-character lines are 360 bytes: the transmit ring absorbs them
-    // between two passes of a poll that runs far faster than the link drains.
-    for (unsigned emitted = 0; emitted < 4 && trace_dump.next < trace_dump.total; ++emitted) {
+    // One line per call, and only while the transmit ring has room for a whole
+    // one: the poll runs far faster than the link drains, so emitting a fixed
+    // number of lines per pass simply overruns the ring (tx_write then drops
+    // them whole, which is what lost most of the first bench dump).
+    constexpr size_t TRACE_LINE_ROOM = 160;
+    if (tx_free_space() < TRACE_LINE_ROOM) {
+        return;
+    }
+    if (trace_dump.next < trace_dump.total) {
         const loop_trace::Sample& sample = loop_trace::at(trace_dump.next++);
         Line line;
         line_text(line, "# T ");
@@ -403,14 +415,13 @@ void trace_service() {
         line_text(line, " ev=");
         line_unsigned(line, sample.flags);
         line_finish(line);
+        return;
     }
-    if (trace_dump.next >= trace_dump.total) {
-        trace_dump.active = false;
-        loop_trace::lock(false);
-        Line line;
-        line_text(line, "# trace end");
-        line_finish(line);
-    }
+    trace_dump.active = false;
+    loop_trace::lock(false);
+    Line line;
+    line_text(line, "# trace end");
+    line_finish(line);
 }
 
 void send_help() {
