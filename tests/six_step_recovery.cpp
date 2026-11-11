@@ -283,8 +283,32 @@ void test_lua_pulses() {
     }
 }
 
+void hall_boot_position_independence() {
+    // A controller derives its electrical angle from the count, so the count
+    // must encode the rotor position itself, not the distance travelled since
+    // boot: resync() re-bases it on the absolute sector of the positive Hall
+    // cycle 1->3->2->6->4->5->1.
+    const uint8_t positive[6] = {1, 3, 2, 6, 4, 5};
+    for (int boot = 0; boot < 6; ++boot) {
+        Rig r(false, positive[boot], false);
+        CHECK(r.hall.get_value() == (encoder_data)boot);
+        // one positive step advances the count into the next sector
+        r.set_hall(positive[(boot + 1) % 6]);
+        r.hall.handle_hall_channel();
+        CHECK(r.hall.get_value() == (encoder_data)(boot + 1));
+        CHECK((uint8_t)r.hall.get_step() == positive[(boot + 1) % 6]);
+
+        Rig back(false, positive[boot], false);
+        back.set_hall(positive[(boot + 5) % 6]);
+        back.hall.handle_hall_channel();
+        CHECK(back.hall.get_value() == (encoder_data)((boot + 11) % 12));
+        CHECK((uint8_t)back.hall.get_step() == positive[(boot + 5) % 6]);
+    }
+}
+
 int main() {
     hall_polling_and_resync();
+    hall_boot_position_independence();
     bounded_retries_and_rearm();
     successful_kick_and_later_stall();
     both_directions_and_all_sectors();

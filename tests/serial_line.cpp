@@ -1,25 +1,42 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <map>
 #include <string>
 
+#include "config_ids.h"
 #include "motor_backend.h"
 #include "serial_line.h"
 #include "usart.h"
 
 UART_HandleTypeDef huart2;
+UART_HandleTypeDef huart1;
 
 millis_t millis_32() {
     return fake_tick;
 }
 
-// app.cpp in the firmware; the test records what the channel applies.
-int32_t applied_config_id = -1;
-float applied_config_value = 0.0f;
+// app.cpp in the firmware; the test records what the channel applies. The
+// range mirrors for ids 12/13 model app.cpp's apply_config_value validation so
+// the serial layer's ERR-on-reject contract is exercised end to end; everything
+// else is accepted unless `config_apply_ok` is forced off.
+std::map<int32_t, float> config_store;
+bool config_apply_ok = true;
 
-void app_apply_config(int32_t id, float value) {
-    applied_config_id = id;
-    applied_config_value = value;
+bool app_apply_config(int32_t id, float value) {
+    if (id < 0 || id >= CFG_ID_COUNT) return false;
+    if (id == CFG_VEL_LPF && !(value >= 0.0f && value <= 1.0f)) return false;
+    if (id == CFG_SPEED_RAMP && !(value > 0.0f && value <= 100.0f)) return false;
+    if (!config_apply_ok) return false;
+    config_store[id] = value;
+    return true;
+}
+
+bool app_get_config(int32_t id, float& value) {
+    const auto entry = config_store.find(id);
+    if (entry == config_store.end()) return false;
+    value = entry->second;
+    return true;
 }
 
 #define CHECK(condition) do { \
@@ -47,7 +64,10 @@ struct FakeMotor : MotorBackend {
     bool enabled = false;
     float target = 0.0f;
     float voltage = 0.0f;
+    float current_a = NAN;
     int regulator_resets = 0;
+    int calibrate_calls = 0;
+    bool calibrated = false;
 
     const char* name() const override { return "fake"; }
     HAL_StatusTypeDef init() override { return HAL_OK; }
@@ -65,6 +85,12 @@ struct FakeMotor : MotorBackend {
     float get_velocity() const override { return velocity; }
     float get_wheel_angle() const override { return angle; }
     MotorFault get_fault() const override { return fault; }
+    float get_torque_current() override { return current_a; }
+    bool auto_calibrate() override {
+        calibrate_calls += 1;
+        calibrated = enabled;
+        return enabled;
+    }
 
 protected:
     void set_wheel_speed_target(float target_rad_s) override { target = target_rad_s; }
@@ -74,6 +100,12 @@ protected:
 std::string take_tx() {
     std::string out = fake_uart_tx;
     fake_uart_tx.clear();
+    return out;
+}
+
+std::string take_mirror() {
+    std::string out = fake_uart_mirror_tx;
+    fake_uart_mirror_tx.clear();
     return out;
 }
 
@@ -175,6 +207,74 @@ void test_status(FakeMotor& motor) {
     send(motor, "S\n");
     CHECK(take_tx() == "S t=0.500 v=6.173 e=0 f=STALLED\r\n");
     motor.fault = MotorFault::NONE;
+}
+
+// Backends with a current measurement append ` i=<A>` to the status line; the
+// legacy line (no current reported) stays byte-identical.
+void test_status_current(FakeMotor& motor) {
+    motor.velocity = 6.0f;
+    motor.current_a = 2.5f;
+    send(motor, "S\n");
+    CHECK(take_tx() == "S t=0.500 v=6.000 e=0 f=NONE i=2.50\r\n");
+
+    motor.current_a = -0.125f;
+    send(motor, "S\n");
+    CHECK(take_tx() == "S t=0.500 v=6.000 e=0 f=NONE i=-0.13\r\n");
+
+    motor.current_a = NAN;
+    motor.velocity = 0.0f;
+    send(motor, "S\n");
+    CHECK(take_tx() == "S t=0.500 v=0.000 e=0 f=NONE\r\n");
+}
+
+// `A` runs the backend's calibration and reports its verdict; the FakeMotor
+// refuses while the driver is disabled, the way the SimpleFOC backend does.
+void test_auto_calibrate(FakeMotor& motor) {
+    send(motor, "A\n");
+    CHECK(take_tx() == "A=0\r\n");
+    CHECK(motor.calibrate_calls == 1);
+    CHECK(!motor.calibrated);
+
+    send(motor, "A1\n");
+    CHECK(take_tx() == "ERR A1\r\n");
+
+    send(motor, "E1\n");
+    take_tx();
+    send(motor, "A\n");
+    CHECK(take_tx() == "A=1\r\n");
+    CHECK(motor.calibrate_calls == 2);
+    CHECK(motor.calibrated);
+
+    send(motor, "E0\n");
+    take_tx();
+}
+
+// '#' diagnostics are mirrored on USART1 (PC4): boot trace, echo and debug
+// labels land there, protocol replies and telemetry do not.
+void test_debug_mirror(FakeMotor& motor) {
+    send(motor, "T0.5\n");
+    CHECK(take_tx() == "T=0.500\r\n");
+    CHECK(take_mirror().empty());
+
+    send(motor, "D1\n");
+    CHECK(take_tx() == "D=1\r\n");
+    CHECK(take_mirror().empty());
+    send(motor, "S\n");
+    take_tx();
+    CHECK(take_mirror() == "# rx S\r\n");
+    send(motor, "D0\n");
+    take_tx();
+    CHECK(take_mirror() == "# rx D0\r\n");
+
+    serial_line_debug("bench label", 1.5f);
+    pump(motor);
+    CHECK(take_mirror() == "# bench label 1.5000\r\n");
+    CHECK(take_tx() == "# bench label 1.5000\r\n");
+
+    serial_line_debug("plain label");
+    pump(motor);
+    CHECK(take_mirror() == "# plain label\r\n");
+    CHECK(take_tx() == "# plain label\r\n");
 }
 
 void test_telemetry(FakeMotor& motor) {
@@ -311,13 +411,13 @@ void test_rx_error_discards_line(FakeMotor& motor) {
 void test_config_command(FakeMotor& motor) {
     send(motor, "C1:0.08\n");
     CHECK(take_tx() == "C1=0.080\r\n");
-    CHECK(applied_config_id == 1);
-    CHECK(std::abs(applied_config_value - 0.08f) < 1e-6f);
+    CHECK(config_store.count(1) == 1);
+    CHECK(std::abs(config_store[1] - 0.08f) < 1e-6f);
 
     send(motor, "C0:0.1\n");
     CHECK(take_tx() == "C0=0.100\r\n");
-    CHECK(applied_config_id == 0);
-    CHECK(std::abs(applied_config_value - 0.1f) < 1e-6f);
+    CHECK(config_store.count(0) == 1);
+    CHECK(std::abs(config_store[0] - 0.1f) < 1e-6f);
 
     send(motor, "C:\n");
     CHECK(take_tx() == "ERR C:\r\n");
@@ -325,6 +425,61 @@ void test_config_command(FakeMotor& motor) {
     CHECK(take_tx() == "ERR C1\r\n");
     send(motor, "Cx:1\n");
     CHECK(take_tx() == "ERR Cx:1\r\n");
+
+    // A value the module rejects (unknown id) answers ERR, not an echo.
+    send(motor, "C99:1\n");
+    CHECK(take_tx() == "ERR C99:1\r\n");
+    CHECK(config_store.count(99) == 0);
+}
+
+// `G` reports the live value of an id the way the GUI reads a slider back.
+void test_config_readback(FakeMotor& motor) {
+    config_store[CFG_PID_KP] = 1.0f;
+    send(motor, "G1\n");
+    CHECK(take_tx() == "C1=1.0000\r\n");
+
+    config_store[CFG_VEL_LPF] = 0.02f;
+    send(motor, "G12\n");
+    CHECK(take_tx() == "C12=0.0200\r\n");
+
+    send(motor, "G99\n");
+    CHECK(take_tx() == "ERR G99\r\n");
+    send(motor, "G\n");
+    CHECK(take_tx() == "ERR G\r\n");
+    send(motor, "Gx\n");
+    CHECK(take_tx() == "ERR Gx\r\n");
+}
+
+// `L`/`R` are serial aliases of config ids 12/13: one storage, persisted, and
+// the rejection path answers ERR.
+void test_lpf_ramp_alias_config(FakeMotor& motor) {
+    send(motor, "L0.02\n");
+    CHECK(take_tx() == "L=0.0200\r\n");
+    CHECK(config_store.count(CFG_VEL_LPF) == 1);
+    CHECK(std::abs(config_store[CFG_VEL_LPF] - 0.02f) < 1e-6f);
+
+    send(motor, "L2\n");
+    CHECK(take_tx() == "ERR L2\r\n");
+    send(motor, "L-0.1\n");
+    CHECK(take_tx() == "ERR L-0.1\r\n");
+
+    send(motor, "R0.5\n");
+    CHECK(take_tx() == "R=0.500\r\n");
+    CHECK(config_store.count(CFG_SPEED_RAMP) == 1);
+    CHECK(std::abs(config_store[CFG_SPEED_RAMP] - 0.5f) < 1e-6f);
+
+    send(motor, "R0\n");
+    CHECK(take_tx() == "ERR R0\r\n");
+    send(motor, "R200\n");
+    CHECK(take_tx() == "ERR R200\r\n");
+
+    // A forced rejection (backend without the knob) reaches the operator.
+    config_apply_ok = false;
+    send(motor, "L0.02\n");
+    CHECK(take_tx() == "ERR L0.02\r\n");
+    config_apply_ok = true;
+    send(motor, "L0.02\n");
+    CHECK(take_tx() == "L=0.0200\r\n");
 }
 
 }
@@ -332,16 +487,22 @@ void test_config_command(FakeMotor& motor) {
 int main() {
     static UART_TypeDef uart_registers;
     huart2.Instance = &uart_registers;
+    static UART_TypeDef mirror_registers;
+    huart1.Instance = &mirror_registers;
+    huart1.tx_capture = &fake_uart_mirror_tx;
 
     FakeMotor motor;
     serial_line_init();
 
     serial_line_poll(motor);
     pump(motor);
-    CHECK(take_tx().rfind("# serial_line ready:", 0) == 0);
+    const std::string boot = take_tx();
+    CHECK(boot.rfind("# serial_line ready:", 0) == 0);
+    CHECK(take_mirror() == boot);
 
     send(motor, "D0\n");
     CHECK(take_tx() == "# rx D0\r\nD=0\r\n");
+    CHECK(take_mirror() == "# rx D0\r\n");
     send(motor, "M0\n");
     CHECK(take_tx() == "M=0\r\n");
 
@@ -350,6 +511,9 @@ int main() {
     test_enable(motor);
     test_zero(motor);
     test_status(motor);
+    test_status_current(motor);
+    test_auto_calibrate(motor);
+    test_debug_mirror(motor);
     test_telemetry(motor);
     test_errors(motor);
     test_help(motor);
@@ -360,6 +524,8 @@ int main() {
     test_noise_discard(motor);
     test_rx_error_discards_line(motor);
     test_config_command(motor);
+    test_config_readback(motor);
+    test_lpf_ramp_alias_config(motor);
 
     std::cout << "serial_line: all checks passed\n";
     return 0;

@@ -23,6 +23,7 @@
 #include <voltbro/encoders/hall_sensor/hall_sensor.h>
 #include <voltbro/devices/inverter.hpp>
 
+#include "config_ids.h"
 #include "motor_backend.h"
 #include "motor_tuning.h"
 #include "serial_line.h"
@@ -94,13 +95,56 @@ static PIDConfig make_default_pid_config() {
 }
 static PIDConfig velocity_pid_config = make_default_pid_config();
 
-// Integral anti-windup, V: the largest voltage the integral term may add. The
-// regulator clamps the accumulated error (rad/s * s) instead, so the operator
-// value is divided by Ki on every gain change.
+// Integral anti-windup, in the backend's output unit (V on six-step, A on the
+// libvoltbro FOC; SimpleFOC's PID clamps the integral together with its whole
+// output and ignores this): the largest contribution the integral term may
+// add. The regulator clamps the accumulated error (rad/s * s) instead, so the
+// operator value is divided by Ki on every gain change.
 static float pid_i_limit_v = velocity_pid_config.ki * velocity_pid_config.integral_error_lim;
+
+// Live overcurrent / stall protection parameters behind ConfigId 5..11; the
+// compiled defaults come from motor_tuning.h, the config topic and the
+// EEPROM override them.
+static current_guard::Config guard_config{
+    .lpf_tf_s = motor_tuning::simplefoc_guard_lpf_tf_s,
+    .peak_a = motor_tuning::simplefoc_oc_peak_a,
+    .peak_ms = motor_tuning::simplefoc_oc_peak_ms,
+    .sustain_a = motor_tuning::simplefoc_oc_sustain_a,
+    .sustain_ms = motor_tuning::simplefoc_oc_sustain_ms,
+    .stall_current_a = motor_tuning::simplefoc_stall_current_a,
+    .stall_velocity_rad_s = motor_tuning::simplefoc_stall_velocity_rad_s,
+    .stall_ms = motor_tuning::simplefoc_stall_ms,
+};
 
 static float integral_error_limit(float limit_v, float ki) {
     return ki > 0.0f ? limit_v / ki : 0.0f;
+}
+
+/* ---- Live config registry ---------------------------------------------------
+ * One float per ConfigId: what apply_config_value last accepted, what the
+ * serial `G` read-back reports and what the EEPROM record stores. Filled from
+ * the compiled defaults at boot; the config topic, the serial channel and a
+ * stored EEPROM record override it. */
+static float config_values[CFG_ID_COUNT];
+
+static void init_config_defaults() {
+    config_values[CFG_WHEEL_DIAMETER] = BOOT_WHEEL_RADIUS_M * 2.0f;
+    config_values[CFG_PID_KP] = velocity_pid_config.kp;
+    config_values[CFG_PID_KI] = velocity_pid_config.ki;
+    config_values[CFG_PID_KD] = velocity_pid_config.kd;
+    config_values[CFG_PID_I_LIMIT] = pid_i_limit_v;
+    config_values[CFG_OC_PEAK_A] = guard_config.peak_a;
+    config_values[CFG_OC_PEAK_MS] = (float)guard_config.peak_ms;
+    config_values[CFG_OC_SUSTAIN_A] = guard_config.sustain_a;
+    config_values[CFG_OC_SUSTAIN_MS] = (float)guard_config.sustain_ms;
+    config_values[CFG_STALL_CURRENT] = guard_config.stall_current_a;
+    config_values[CFG_STALL_SPEED] = guard_config.stall_velocity_rad_s;
+    config_values[CFG_STALL_MS] = (float)guard_config.stall_ms;
+    config_values[CFG_VEL_LPF] = motor_tuning::simplefoc_velocity_lpf_tf;
+    // Mirrors the MotorBackend façade's compiled speed-ramp default.
+    config_values[CFG_SPEED_RAMP] = 2.0f;
+    config_values[CFG_TORQUE_RAMP] = motor_tuning::simplefoc_torque_ramp_a_s;
+    config_values[CFG_BRAKE_CURRENT] = motor_tuning::simplefoc_brake_current_a;
 }
 
 /* ---- Wheel parameters persisted in the on-board EEPROM ---------------------
@@ -110,22 +154,21 @@ static float integral_error_limit(float limit_v, float ki) {
  * and one EEPROM write per keystroke would wear the cell out. The magic and the
  * version reject an erased (0xFF) or foreign EEPROM.
  *
- * Version 2 changed `i_limit` from the regulator's error-domain clamp
- * (rad/s * s) to the operator-facing integral voltage, V — a version-1 record
- * would be read in the wrong unit, so it is rejected and the module falls back
- * to its compiled defaults. */
+ * The record is the config-values registry below (one float per ConfigId), so
+ * a new id only has to join the enum and the apply switch. The version rejects
+ * a record written with a different CFG_ID_COUNT or layout: version 3 and
+ * earlier kept named fields and are rejected (the module falls back to its
+ * compiled defaults — the values are re-tunable over the config topic). The
+ * value units follow the flashed backend (V on six-step, A on the FOC builds),
+ * so a wheel moved between backends needs its gains re-tuned, not re-read. */
 struct StoredWheelConfig {
     uint32_t magic;
     uint16_t version;
     uint16_t reserved;
-    float wheel_diameter_m;
-    float kp;
-    float ki;
-    float kd;
-    float i_limit;  // V, the largest integral contribution to the output
+    float values[CFG_ID_COUNT];
 };
 static constexpr uint32_t WHEEL_CONFIG_MAGIC = 0x314E4C47u;  // "GLN1"
-static constexpr uint16_t WHEEL_CONFIG_VERSION = 2;
+static constexpr uint16_t WHEEL_CONFIG_VERSION = 4;
 static constexpr uint16_t WHEEL_CONFIG_ADDRESS = 0;
 static constexpr millis_t CONFIG_SAVE_DEBOUNCE_MS = 1000;
 
@@ -157,6 +200,10 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
 [[noreturn]] void app() {
     start_timers();
     start_cyphal();
+
+    // The config registry must hold the compiled defaults before any config
+    // source (EEPROM record, CAN topic, serial `C`) overrides it.
+    init_config_defaults();
 
     // The HallSensor ctor runs before GPIO clocks/inputs are initialized, so its
     // cached state is meaningless until we re-sample the pins here.
@@ -240,6 +287,8 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
                     case MotorFault::INVALID_SUPPLY: reason = "invalid bus voltage"; break;
                     case MotorFault::INVALID_COMMAND: reason = "non-finite voltage command"; break;
                     case MotorFault::STALLED: reason = "stalled; send zero to rearm"; break;
+                    case MotorFault::OVERCURRENT: reason = "overcurrent; send zero to rearm"; break;
+                    case MotorFault::DRIVER_FAULT: reason = "gate driver fault; disable/enable to rearm"; break;
                 }
                 uavcan_diagnostic_Record_1_1 msg = {};
                 msg.severity.value = fault == MotorFault::NONE ?
@@ -281,54 +330,115 @@ static constexpr CanardPortID SPEED_CMD_PORT = 4000;  // target wheel speed comm
 static constexpr CanardPortID DIRECT_SPEED_CMD_PORT = 4050;  // open-loop voltage command, V
 static constexpr CanardPortID CONFIG_PORT = 4100;     // runtime config (see ConfigSub)
 
-/* ---- Config topic: uavcan.primitive.array.Integer32 on CONFIG_PORT ----
- * Exactly three elements: { id, numerator, denominator }. The node applies
- *     value = numerator / denominator
- * to the parameter selected by `id`. Sending one rational at a time lets any
- * float be set at any moment without a fixed-layout array.
- * Keep this enum in sync with config_defs.lua in the repo root.
- *
- * The velocity gains are in the regulator's own unit — shaft rad/s, not wheel
- * m/s. The façade converts the set-point and the feedback at its edge, the
- * gains are handed to the backend untouched, so they are V/(rad/s) on the
- * six-step and SimpleFOC builds and A/(rad/s) on the libvoltbro FOC one. */
-enum ConfigId : int32_t {
-    CFG_WHEEL_DIAMETER = 0,  // m,            drive-wheel diameter (rad/s <-> m/s)
-    CFG_PID_KP        = 1,   // V/(rad/s),    proportional gain
-    CFG_PID_KI        = 2,   // V/(rad/s * s),integral gain
-    CFG_PID_KD        = 3,   // V*s/(rad/s),  derivative gain
-    CFG_PID_I_LIMIT   = 4,   // V,            integral anti-windup clamp
-};
-
-// Apply a single decoded config value to the live parameters.
-static void apply_config_value(int32_t id, float value) {
+// Apply a single decoded config value to the live parameters. Returns whether
+// the value was accepted; the serial channel answers ERR on a rejection, the
+// CAN handler just ignores it.
+static bool apply_config_value(int32_t id, float value) {
+    if (id < 0 || id >= CFG_ID_COUNT || !std::isfinite(value)) {
+        return false;
+    }
     if (id == CFG_WHEEL_DIAMETER) {
-        if (value > 0.0f && motor) {
-            motor->set_wheel_radius(value * 0.5f);
+        if (value <= 0.0f || !motor) {
+            return false;
         }
+        motor->set_wheel_radius(value * 0.5f);
+        config_values[id] = value;
         mark_config_changed();
-        return;
+        return true;
     }
 
-    PIDConfig pid = velocity_pid_config;
+    if (id >= CFG_OC_PEAK_A && id <= CFG_STALL_MS) {
+        // Protection parameters must be positive-domain and castable to their
+        // fixed-point windows; a zero trip level would latch on the idle
+        // offsets and a zero velocity ceiling would stall on any command, so
+        // those are rejected as well.
+        if (value < 0.0f || value > 1.0e6f) {
+            return false;
+        }
+        current_guard::Config guard = guard_config;
+        switch (id) {
+            case CFG_OC_PEAK_A:     guard.peak_a = value; break;
+            case CFG_OC_PEAK_MS:    guard.peak_ms = (uint32_t)value; break;
+            case CFG_OC_SUSTAIN_A:  guard.sustain_a = value; break;
+            case CFG_OC_SUSTAIN_MS: guard.sustain_ms = (uint32_t)value; break;
+            case CFG_STALL_CURRENT: guard.stall_current_a = value; break;
+            case CFG_STALL_SPEED:   guard.stall_velocity_rad_s = value; break;
+            case CFG_STALL_MS:      guard.stall_ms = (uint32_t)value; break;
+            default: return false;
+        }
+        if (guard.peak_a <= 0.0f || guard.sustain_a <= 0.0f ||
+            guard.stall_current_a <= 0.0f || guard.stall_velocity_rad_s <= 0.0f) {
+            return false;
+        }
+        guard_config = guard;
+        if (motor) {
+            motor->set_current_guard(guard);
+        }
+        config_values[id] = value;
+        mark_config_changed();
+        return true;
+    }
+
     switch (id) {
-        case CFG_PID_KP:        pid.kp = value; break;
-        case CFG_PID_KI:        pid.ki = value; break;
-        case CFG_PID_KD:        pid.kd = value; break;
+        case CFG_PID_KP: {
+            PIDConfig pid = velocity_pid_config;
+            pid.kp = value;
+            velocity_pid_config = pid;
+            break;
+        }
+        case CFG_PID_KI: {
+            PIDConfig pid = velocity_pid_config;
+            pid.ki = value;
+            velocity_pid_config = pid;
+            break;
+        }
+        case CFG_PID_KD: {
+            PIDConfig pid = velocity_pid_config;
+            pid.kd = value;
+            velocity_pid_config = pid;
+            break;
+        }
         case CFG_PID_I_LIMIT:
-            if (value < 0.0f) return;
+            if (value < 0.0f) return false;
             pid_i_limit_v = value;
             break;
-        default: return;  // unknown id: ignore
+        case CFG_VEL_LPF:
+            if (!motor || !motor->set_velocity_lpf(value)) {
+                return false;
+            }
+            break;
+        case CFG_SPEED_RAMP:
+            // The façade asserts a positive ramp, so the range is checked here.
+            if (!(value > 0.0f) || value > 100.0f || !motor) {
+                return false;
+            }
+            motor->set_speed_ramp(value);
+            break;
+        case CFG_TORQUE_RAMP:
+            if (!motor || !motor->set_torque_ramp(value)) {
+                return false;
+            }
+            break;
+        case CFG_BRAKE_CURRENT:
+            if (!motor || !motor->set_brake_current(value)) {
+                return false;
+            }
+            break;
+        default:
+            return false;  // unknown id: ignore
     }
-    // Ki may have just changed, so the error-domain clamp is re-derived from
-    // the volt-domain one every time.
-    pid.integral_error_lim = integral_error_limit(pid_i_limit_v, pid.ki);
-    velocity_pid_config = pid;
-    if (motor) {
-        motor->set_velocity_pid(velocity_pid_config);
+    if (id >= CFG_PID_KP && id <= CFG_PID_I_LIMIT) {
+        // Ki may have just changed, so the error-domain clamp is re-derived
+        // from the output-domain one every time.
+        velocity_pid_config.integral_error_lim =
+            integral_error_limit(pid_i_limit_v, velocity_pid_config.ki);
+        if (motor) {
+            motor->set_velocity_pid(velocity_pid_config);
+        }
     }
+    config_values[id] = value;
     mark_config_changed();
+    return true;
 }
 
 /// Restore the parameters the wheel ran with before the last power cycle.
@@ -346,18 +456,12 @@ static void load_stored_wheel_config() {
         serial_line_debug("eeprom: nothing stored, wheel config stays at defaults");
         return;
     }
-    apply_config_value(CFG_WHEEL_DIAMETER, stored.wheel_diameter_m);
-    apply_config_value(CFG_PID_KP, stored.kp);
-    apply_config_value(CFG_PID_KI, stored.ki);
-    apply_config_value(CFG_PID_KD, stored.kd);
-    apply_config_value(CFG_PID_I_LIMIT, stored.i_limit);
+    for (int32_t id = 0; id < CFG_ID_COUNT; ++id) {
+        // A backend without a knob rejects its value and keeps the default.
+        (void)apply_config_value(id, stored.values[id]);
+    }
     config_changed_at = 0;  // restored, not an edit that needs writing back
     serial_line_debug("eeprom: wheel config restored");
-    serial_line_debug("eeprom: wheel diameter", stored.wheel_diameter_m);
-    serial_line_debug("eeprom: kp", stored.kp);
-    serial_line_debug("eeprom: ki", stored.ki);
-    serial_line_debug("eeprom: kd", stored.kd);
-    serial_line_debug("eeprom: i_limit", stored.i_limit);
 }
 
 /// Persist the live wheel parameters. A failed write is logged, not fatal: the
@@ -371,11 +475,9 @@ static void save_stored_wheel_config() {
     stored.magic = WHEEL_CONFIG_MAGIC;
     stored.version = WHEEL_CONFIG_VERSION;
     stored.reserved = 0;
-    stored.wheel_diameter_m = (motor ? motor->get_wheel_radius() : BOOT_WHEEL_RADIUS_M) * 2.0f;
-    stored.kp = velocity_pid_config.kp;
-    stored.ki = velocity_pid_config.ki;
-    stored.kd = velocity_pid_config.kd;
-    stored.i_limit = pid_i_limit_v;
+    for (int32_t id = 0; id < CFG_ID_COUNT; ++id) {
+        stored.values[id] = config_values[id];
+    }
     if (eeprom.write<StoredWheelConfig>(&stored, WHEEL_CONFIG_ADDRESS) != HAL_OK) {
         serial_line_debug("eeprom: write failed");
         return;
@@ -383,8 +485,16 @@ static void save_stored_wheel_config() {
     serial_line_debug("eeprom: wheel config saved");
 }
 
-void app_apply_config(int32_t id, float value) {
-    apply_config_value(id, value);
+bool app_apply_config(int32_t id, float value) {
+    return apply_config_value(id, value);
+}
+
+bool app_get_config(int32_t id, float& value) {
+    if (id < 0 || id >= CFG_ID_COUNT) {
+        return false;
+    }
+    value = config_values[id];
+    return true;
 }
 
 void in_loop_reporting(millis_t current_t) {

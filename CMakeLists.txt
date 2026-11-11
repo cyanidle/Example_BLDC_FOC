@@ -39,8 +39,12 @@ target_link_libraries(vbcore PRIVATE
     DSP
 )
 
-set(VB_MOTOR_IMPL "sixstep" CACHE STRING "Motor control implementation compiled into the firmware")
+set(VB_MOTOR_IMPL "simplefoc" CACHE STRING "Motor control implementation compiled into the firmware")
 set_property(CACHE VB_MOTOR_IMPL PROPERTY STRINGS sixstep voltbro-foc simplefoc)
+# SimpleFOC only: measure the zero electric angle at every boot instead of
+# using the baked VB_SIMPLEFOC_ZERO_ELECTRIC_ANGLE. The rotor parks on a fixed
+# electrical angle while doing so, so the wheel needs room to turn.
+set(VB_SIMPLEFOC_ALIGN_ON_INIT "0" CACHE STRING "SimpleFOC: measure the zero electric angle at boot (0/1)")
 
 if(VB_MOTOR_IMPL STREQUAL "sixstep")
     set(VB_MOTOR_BACKEND_SOURCES App/backends/motor_backend_six_step.cpp)
@@ -116,6 +120,7 @@ if(VB_MOTOR_IMPL STREQUAL "simplefoc")
     )
     target_compile_definitions(vbcore PRIVATE
         -DSIMPLEFOC_DISABLE_DEBUG
+        -DVB_SIMPLEFOC_ALIGN_ON_INIT=${VB_SIMPLEFOC_ALIGN_ON_INIT}
     )
 endif()
 

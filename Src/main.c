@@ -104,6 +104,7 @@ int main(void)
   MX_CORDIC_Init();
   MX_SPI3_Init();
   MX_USART2_UART_Init();
+  MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
   app();
   /* USER CODE END 2 */

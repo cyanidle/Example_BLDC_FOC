@@ -17,16 +17,52 @@ class MotorBackend;
  *   E<0|1>     driver enable                 -> E=<0|1>
  *              (the only way to change it: a module boots enabled and no
  *               Cyphal command, config write or register access enables or
- *               disables the bridge)
+ *               disables the bridge. `E1` also replays the gate-driver enable
+ *               pulse, which is what clears a latched DRIVER_FAULT.)
  *   X          zero both set-points          -> OK
  *   M<rate>    telemetry rate in Hz, 0 = off -> M=<rate>
  *              (off until asked; max 100 Hz)
  *   D<0|1>     echo received lines as "# rx -> D=<0|1>"
  *              <line>" (on by default)
- *   C<id>:<v>  runtime config, same ids as the CAN config topic
- *              (0 wheel diameter m, 1..3 velocity Kp/Ki/Kd,
- *              4 integrator limit) -> C<id>=<value>
- *   S          one status line now           -> S t=<m/s> v=<rad/s> e=<0|1> f=<FAULT>
+ *   V<0|1>     loop diagnostics: the telemetry tick sends a "D" line instead
+ *              of the status line -> V=<0|1>
+ *              D t=<m/s> v=<rad/s> sp=<A> iq=<A> id=<A> im=<A> uq=<V> ud=<V>
+ *              b=<V> n=<counts> f=<fault> e=<0|1>
+ *              (`t` applied speed set-point, `sp` velocity-PID output =
+ *               q-current demand, `iq`/`id` the filtered d/q currents the
+ *               regulators close over, `im` the unfiltered phase-current
+ *               magnitude the guards see, `uq`/`ud` applied d/q voltage, `b`
+ *               the bus voltage, `n` absolute rotor count, `f` the MotorFault
+ *               enum value (0 NONE, 4 STALLED, 5 OVERCURRENT, 6 DRIVER_FAULT)
+ *               and `e` the bridge enable state. SimpleFOC only; it is the
+ *               tool that tells a velocity-loop limit cycle from a
+ *               current-loop or angle fault. While on, the telemetry rate is
+ *               capped at 71 Hz to fit one line into the 115200 baud link.)
+ *   L<float>   velocity feedback low-pass, s (0 = off; SimpleFOC only)
+ *                                            -> L=<value>
+ *              alias of C12 (config id 12): persisted in the module EEPROM
+ *              and read back with G12
+ *   R<float>   wheel speed set-point ramp, m/s^2 -> R=<value>
+ *              alias of C13 (config id 13): persisted, read back with G13
+ *   C<id>:<v>  set a runtime config value, same ids as the CAN config topic
+ *              (see App/config_ids.h / mods/config_defs.lua: 0 wheel diameter
+ *              m, 1..3 velocity Kp/Ki/Kd, 4 integrator limit, 5..8
+ *              overcurrent guard, 9..11 stall guard, 12 velocity LPF s,
+ *              13 speed ramp m/s^2, 14 torque ramp A/s, 15 brake current A)
+ *              -> C<id>=<value>; ERR when the id is unknown or the value is
+ *              rejected (wrong range, or a knob the compiled backend lacks)
+ *   G<id>      read a runtime config value back -> C<id>=<value> (the live
+ *              value: compiled default, EEPROM record or last accepted write)
+ *   S          one status line now           -> S t=<m/s> v=<rad/s> e=<0|1> f=<FAULT> [i=<A>]
+ *              (`i` is the measured q-axis current and appears only on backends
+ *               with a current measurement, e.g. SimpleFOC's d/q loop)
+ *   A          calibrate the motor and re-tune the
+ *              current regulators (SimpleFOC only;
+ *              driver must be enabled, wheel lifted) -> A=<0|1>
+ *              (blocks for a few seconds with the phases energised: R/L are
+ *               measured and the current PID gains re-derived from them; the
+ *               values arrive as "# simplefoc calibrate: ..." debug lines and
+ *               the gains live until reboot. Zero the set-points first.)
  *   ?          command list                  -> one "# ..." line per command
  *   anything else                            -> ERR <line>
  *

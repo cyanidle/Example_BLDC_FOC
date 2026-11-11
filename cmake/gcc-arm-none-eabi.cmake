@@ -35,8 +35,8 @@ if(CMAKE_BUILD_TYPE MATCHES Release)
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Os -g0")
 endif()
 
-set(CMAKE_ASM_FLAGS "${CMAKE_C_FLAGS} -x assembler-with-cpp -MMD -MP")
-set(CMAKE_CXX_FLAGS "${CMAKE_C_FLAGS} -fno-rtti -fno-exceptions -fno-threadsafe-statics")
+set(CMAKE_ASM_FLAGS "${CMAKE_ASM_FLAGS} ${CMAKE_C_FLAGS} -x assembler-with-cpp -MMD -MP")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CMAKE_C_FLAGS} -fno-rtti -fno-exceptions -fno-threadsafe-statics")
 
 set(CMAKE_C_LINK_FLAGS "${TARGET_FLAGS}")
 set(CMAKE_C_LINK_FLAGS "${CMAKE_C_LINK_FLAGS} -T \"${CMAKE_SOURCE_DIR}/stm32g474retx_flash.ld\"")

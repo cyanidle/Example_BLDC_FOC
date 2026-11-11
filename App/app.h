@@ -23,5 +23,8 @@ millis_t millis_32();
 void start_timers();
 
 // app.cpp: applies one runtime-config value with the same vocabulary as the CAN
-// config topic (see ConfigId there and mods/config_defs.lua in the repo root).
-void app_apply_config(int32_t id, float value);
+// config topic (see ConfigId there and mods/config_defs.lua in the repo root);
+// returns whether the value was accepted. app_get_config reads the live value
+// back (compiled default, EEPROM record or last accepted write).
+bool app_apply_config(int32_t id, float value);
+bool app_get_config(int32_t id, float& value);

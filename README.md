@@ -6,8 +6,8 @@
 
 | value | backend | control |
 |-------|---------|---------|
-| `sixstep` (default) | libvoltbro `SixStepController` + external velocity PID | Hall-only six-step commutation, run-time stall recovery |
-| `simplefoc` | vendored Arduino-FOC v2.4.0 (`Drivers/Arduino-FOC`) | 3-PWM sine FOC with SimpleFOC's own velocity PID |
+| `simplefoc` (default) | vendored Arduino-FOC v2.4.0 (`Drivers/Arduino-FOC`) | 3-PWM sine FOC, d/q current loops over the board's shunts, SimpleFOC velocity PID in q-current |
+| `sixstep` | libvoltbro `SixStepController` + external velocity PID | Hall-only six-step commutation, run-time stall recovery |
 | `voltbro-foc` | libvoltbro `FOC` | CORDIC field-oriented control with d/q current loops at 5 kHz, velocity loop inside the library |
 
 All three sit behind one interface, `App/motor_backend.h` (`MotorBackend`), and
@@ -25,8 +25,8 @@ top of `App/motor_backend.h`.
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
 ninja -C build
 
-cmake -S . -B build-simplefoc -G Ninja -DCMAKE_BUILD_TYPE=Debug -DVB_MOTOR_IMPL=simplefoc
-ninja -C build-simplefoc
+cmake -S . -B build-sixstep -G Ninja -DCMAKE_BUILD_TYPE=Debug -DVB_MOTOR_IMPL=sixstep
+ninja -C build-sixstep
 
 cmake -S . -B build-foc -G Ninja -DCMAKE_BUILD_TYPE=Debug -DVB_MOTOR_IMPL=voltbro-foc
 ninja -C build-foc
@@ -130,14 +130,75 @@ PWM hooks with the TIM1/INH channels of this board.
   q-voltage set-point would only flat-top the sine. The 17 V entry in
   `motor_tuning.h` is the upper bound, not the effective limit on a 24 V bus.
 
+#### Current control
+
+Torque control runs in `TorqueControlType::foc_current`: the velocity PID's
+output is a q-current set-point (A, clamped to the 8 A current limit) and
+SimpleFOC's `PID_current_q` / `PID_current_d` close the loop over the measured
+phase currents. The currents come from an `InverterCurrentSense` adapter over
+the same libvoltbro `Inverter` every backend uses for bus voltage — it owns
+the ADC+DMA and the zero-current offsets (sampled with the bridge disabled),
+the adapter only converts its amp-valued phases into SimpleFOC's
+`PhaseCurrent_s`. Because the ADC free-runs with 16x oversampling, the
+measurement is not PWM-synchronised; the current LPF
+(`simplefoc_current_lpf_tf`) removes the residual ripple.
+
+`initFOC()`'s current-sense alignment is skipped (`skip_align`): it probes the
+phases with live voltage while this firmware parks the bridge during init.
+The phase mapping and polarities are compile-time bench knowledge instead:
+`VB_SIMPLEFOC_CURRENT_SIGN_A/B/C` (backend defines, default `+1`). Bench
+procedure for a new module: lift the wheel, `E1`, apply a small direct voltage
+(`Q0.5`) and read `S ... i=` — the reported q-current must follow the sign of
+the applied voltage and settle near zero at zero volts. A wrong sign makes the
+wheel hum against itself (the current PID saturates at the voltage limit);
+flip that phase's macro and re-verify the drive direction afterwards, because
+the hardcoded zero electrical angle is only valid for one polarity set.
+
+The open-loop voltage channel (serial `Q` / Cyphal 4050) deliberately leaves
+current mode — its number stays volts. The status line reports the measured
+q-current as an extra ` i=<A>` field (`S t=... v=... e=... f=... i=...`),
+which is how the sign check above is observed.
+
+#### Soft start
+
+Three layers, so no command source can step the bridge:
+
+- speed commands are ramped by the `MotorBackend` façade
+  (`apply_speed_ramp`, 2 m/s²) before they reach the velocity PID;
+- the velocity PID's output (the q-current set-point) is slewed by
+  `PID_velocity.output_ramp` (`simplefoc_torque_ramp_a_s`, 8 A/s), so the
+  torque builds over ~1 s to the current limit and a PID reset (enable, mode
+  switch) restarts the ramp from zero;
+- the open-loop voltage channel slews its applied voltage
+  (`simplefoc_voltage_ramp_v_s`, 20 V/s) in `update()`; a zero command
+  bypasses the ramp and parks the bridge immediately;
+- the current guard (`App/current_guard.h`) watches the common-mode-removed
+  phase-current magnitude: while it is over the current limit the open-loop
+  channel's voltage ceiling integrates down (current-limited acceleration),
+  14 A for 25 ms or 10 A for 250 ms parks the bridge with an OVERCURRENT
+  fault, and a shaft stalled under command for 600 ms parks it with STALLED.
+  Both latch until a zero command rearms them; the parameters are runtime
+  config (ids 5-11).
+
 ## CAN config coverage
 
 `CFG_WHEEL_DIAMETER` (id 0) and the velocity gains `CFG_PID_KP/KI/KD` (1-3) reach
-all three backends; the gain units follow the backend (V per rad/s for six-step
-and SimpleFOC, A per rad/s for the libvoltbro FOC). `CFG_PID_I_LIMIT` (4) only
-applies to the six-step and FOC backends — SimpleFOC's `PIDController` has no
-integral clamp of its own (it clamps the whole output by `limit`), so the value is
-accepted and ignored when `VB_MOTOR_IMPL=simplefoc`.
+all three backends; the gain units follow the backend's regulator output
+(V per rad/s for six-step, A per rad/s for the FOC backends — a wheel tuned on
+one backend needs its gains re-scaled when reflashed to another).
+`CFG_PID_I_LIMIT` (4) only applies to the six-step and libvoltbro FOC backends —
+SimpleFOC's `PIDController` has no integral clamp of its own (it clamps the whole
+output by `limit`), so the value is accepted and ignored when
+`VB_MOTOR_IMPL=simplefoc`.
+
+The current guard ids `CFG_OC_*` (5-8) and `CFG_STALL_*` (9-11) carry the
+overcurrent/stall protection parameters of `App/current_guard.h`: the
+overcurrent levels and windows apply to every backend that measures phase
+current (six-step and SimpleFOC both read the module's 3-shunt front end), the
+stall part only to SimpleFOC — the six-step hall-progress watchdog owns stalls
+and would be pre-empted by the guard's shorter window. A stall window of 0
+disables the stall check. All of them are EEPROM-persisted (config record
+version 3; older records are rejected and fall back to the compiled defaults).
 
 ## Six-step startup/stall recovery
 
@@ -158,6 +219,12 @@ turn of forward progress since the last kick restores the retry budget; rocking
 across one Hall boundary does not. Repeated nonzero commands do not clear a
 latched stall. A zero command or explicit disable rearms recovery. Zero also
 coasts immediately, including during a kick.
+
+The backend additionally runs the current guard's overcurrent part over the
+Inverter's phase currents (the controller itself has no current limit): 14 A
+for 25 ms or 10 A for 250 ms parks the bridge with an OVERCURRENT fault,
+rearmed by a zero command like the stall fault. The guard's stall timer is
+forced off here — the kick recovery above needs its full window.
 
 This fits the repository's `test.lua`: it streams direct voltage at 10 Hz and
 alternates one-second `+4 V`, zero, `-4 V`, zero phases. Each zero phase rearms the
@@ -185,10 +252,12 @@ voltage); the diagnostic text is prefixed with the backend name.
 The host tests compile the actual Hall decoder and six-step controller against
 a small fake HAL, exercising all sectors/directions, missed/duplicate edges,
 bounded kicks, successful recovery, Hall chatter, invalid inputs, zero/disable
-rearming, timer wrap, and the `test.lua` pulse sequence. They do not model motor
-torque, gate-driver timing, or prove that a physical motor will start. The
-`voltbro-foc` and `simplefoc` backends have no host test yet; they are verified
-by building all three configurations.
+rearming, timer wrap, and the `test.lua` pulse sequence. The serial-line test
+also covers the `S` status line, including the optional ` i=<A>` current field
+backends with current measurement append. They do not model motor torque,
+gate-driver timing, or prove that a physical motor will start. The
+`voltbro-foc` and `simplefoc` backends have no host test of their own; they are
+verified by building all three configurations.
 
 ```sh
 cmake -S tests -B tests/build -G Ninja

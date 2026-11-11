@@ -17,6 +17,17 @@ target_include_directories(six_step_recovery PRIVATE hal ${VOLTBRO})
 target_compile_options(six_step_recovery PRIVATE -Wall -Wextra -Wno-reorder)
 add_test(NAME six_step_recovery COMMAND six_step_recovery)
 
+add_executable(current_guard
+    current_guard.cpp
+)
+target_compile_features(current_guard PRIVATE cxx_std_20)
+target_include_directories(current_guard PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/../App
+    ${VOLTBRO}
+)
+target_compile_options(current_guard PRIVATE -Wall -Wextra -Wno-reorder)
+add_test(NAME current_guard COMMAND current_guard)
+
 add_executable(serial_line
     serial_line.cpp
     ${CMAKE_CURRENT_LIST_DIR}/../App/serial_line.cpp

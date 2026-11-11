@@ -7,14 +7,14 @@
 
 #include <voltbro/utils.hpp>
 
+#include "config_ids.h"
 #include "motor_backend.h"
 #include "usart.h"
 
 millis_t millis_32();
 // app.cpp; declared here so this unit stays free of the Cyphal headers.
-void app_apply_config(int32_t id, float value);
-
-millis_t millis_32();
+bool app_apply_config(int32_t id, float value);
+bool app_get_config(int32_t id, float& value);
 
 namespace {
 
@@ -24,6 +24,10 @@ constexpr size_t TX_CHUNK_SIZE = 64;
 constexpr size_t LINE_SIZE = 64;
 constexpr unsigned TELEMETRY_MAX_HZ = 100;
 constexpr unsigned REPLY_CAPACITY = 96;
+// With `V1` the diagnostics line replaces the status line (it carries the
+// set-point and the velocity too), so the rate is capped to keep one 96-byte
+// line inside the 115200 baud link budget: 12 ms is ~7.4 kB/s of the 11.5 kB/s.
+constexpr millis_t DIAGNOSTICS_MIN_PERIOD_MS = 12;
 
 uint8_t rx_ring[RX_RING_SIZE];
 volatile size_t rx_head = 0;
@@ -46,6 +50,8 @@ struct SetPoints {
     unsigned telemetry_hz = 0;
     millis_t telemetry_time = 0;
     bool verbose = true;
+    // `V1`: append a `D ...` loop-diagnostics line to every telemetry tick.
+    bool diagnostics = false;
     bool booted = false;
 };
 
@@ -76,7 +82,17 @@ void line_unsigned(Line& line, unsigned long value) {
     }
 }
 
+void line_signed(Line& line, long value) {
+    if (value < 0) {
+        line_text(line, "-");
+        line_unsigned(line, 0UL - static_cast<unsigned long>(value));
+        return;
+    }
+    line_unsigned(line, static_cast<unsigned long>(value));
+}
+
 void tx_write(const char* text, size_t length);
+void mirror_write(const char* text, size_t length);
 
 // newlib-nano has no %f in printf unless the link pulls in _printf_float, so
 // every value this channel reports is scaled to an integer and printed by hand.
@@ -121,8 +137,14 @@ void line_fixed(Line& line, float value, unsigned decimals) {
 }
 
 void line_finish(Line& line) {
+    // '#' marks diagnostics, and diagnostics are what the USART1 mirror
+    // carries; protocol replies stay on USART2 alone.
+    const bool diagnostics = line.text[0] == '#';
     line_text(line, "\r\n");
     tx_write(line.text, line.length);
+    if (diagnostics) {
+        mirror_write(line.text, line.length);
+    }
 }
 
 void tx_kick() {
@@ -162,6 +184,48 @@ void tx_write(const char* text, size_t length) {
     tx_kick();
 }
 
+// USART1 (PC4) mirror of the diagnostics: every '#' line this channel produces
+// also goes out on the second UART, so a bench can watch the boot trace, echo
+// and debug labels on a separate dongle while USART2 carries the protocol.
+// Same ring-and-kick shape (and thread-context-kick-only rule) as above.
+constexpr size_t MIRROR_RING_SIZE = 512;
+uint8_t mirror_ring[MIRROR_RING_SIZE];
+volatile size_t mirror_head = 0;
+volatile size_t mirror_tail = 0;
+uint8_t mirror_chunk[TX_CHUNK_SIZE];
+
+void mirror_kick() {
+    const uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    if (huart1.gState == HAL_UART_STATE_READY) {
+        const size_t available = (mirror_head + MIRROR_RING_SIZE - mirror_tail) % MIRROR_RING_SIZE;
+        if (available > 0) {
+            const size_t count = available < TX_CHUNK_SIZE ? available : TX_CHUNK_SIZE;
+            for (size_t i = 0; i < count; ++i) {
+                mirror_chunk[i] = mirror_ring[(mirror_tail + i) % MIRROR_RING_SIZE];
+            }
+            if (HAL_UART_Transmit_IT(&huart1, mirror_chunk, static_cast<uint16_t>(count)) == HAL_OK) {
+                mirror_tail = (mirror_tail + count) % MIRROR_RING_SIZE;
+            }
+        }
+    }
+    __set_PRIMASK(primask);
+}
+
+void mirror_write(const char* text, size_t length) {
+    if (length >= MIRROR_RING_SIZE) {
+        return;
+    }
+    if ((mirror_head + MIRROR_RING_SIZE - mirror_tail) % MIRROR_RING_SIZE + length >= MIRROR_RING_SIZE) {
+        return;
+    }
+    for (size_t i = 0; i < length; ++i) {
+        mirror_ring[mirror_head] = static_cast<uint8_t>(text[i]);
+        mirror_head = (mirror_head + 1) % MIRROR_RING_SIZE;
+    }
+    mirror_kick();
+}
+
 const char* fault_name(MotorFault fault) {
     switch (fault) {
         case MotorFault::NONE: return "NONE";
@@ -169,6 +233,8 @@ const char* fault_name(MotorFault fault) {
         case MotorFault::INVALID_SUPPLY: return "INVALID_SUPPLY";
         case MotorFault::INVALID_COMMAND: return "INVALID_COMMAND";
         case MotorFault::STALLED: return "STALLED";
+        case MotorFault::OVERCURRENT: return "OVERCURRENT";
+        case MotorFault::DRIVER_FAULT: return "DRIVER_FAULT";
     }
     return "UNKNOWN";
 }
@@ -204,6 +270,46 @@ void send_status(MotorBackend& motor) {    Line line;
     line_unsigned(line, motor.is_on() ? 1 : 0);
     line_text(line, " f=");
     line_text(line, fault_name(motor.get_fault()));
+    // Only backends with a current measurement report it (SimpleFOC's d/q
+    // loop); six-step keeps the byte-identical legacy line.
+    const float current_a = motor.get_torque_current();
+    if (std::isfinite(current_a)) {
+        line_text(line, " i=");
+        line_fixed(line, current_a, 2);
+    }
+    line_finish(line);
+}
+
+void send_diagnostics(MotorBackend& motor) {
+    MotorDiagnostics diagnostics;
+    if (!motor.get_diagnostics(diagnostics)) {
+        return;
+    }
+    Line line;
+    line_text(line, "D t=");
+    line_fixed(line, diagnostics.speed_target_m_s, 3);
+    line_text(line, " v=");
+    line_fixed(line, motor.get_velocity(), 3);
+    line_text(line, " sp=");
+    line_fixed(line, diagnostics.q_current_setpoint_a, 2);
+    line_text(line, " iq=");
+    line_fixed(line, diagnostics.q_current_a, 2);
+    line_text(line, " id=");
+    line_fixed(line, diagnostics.d_current_a, 2);
+    line_text(line, " im=");
+    line_fixed(line, diagnostics.phase_current_a, 2);
+    line_text(line, " uq=");
+    line_fixed(line, diagnostics.q_voltage_v, 2);
+    line_text(line, " ud=");
+    line_fixed(line, diagnostics.d_voltage_v, 2);
+    line_text(line, " b=");
+    line_fixed(line, diagnostics.bus_voltage_v, 1);
+    line_text(line, " n=");
+    line_signed(line, (long)diagnostics.hall_counts);
+    line_text(line, " f=");
+    line_unsigned(line, (unsigned long)motor.get_fault());
+    line_text(line, " e=");
+    line_unsigned(line, motor.is_on() ? 1u : 0u);
     line_finish(line);
 }
 
@@ -222,6 +328,12 @@ void send_help() {
         "# X         zero both set-points",
         "# M<rate>   telemetry rate in Hz, 0 = off",
         "# S         status line",
+        "# V<0|1>    loop diagnostics (D line) with every status line",
+        "# L<float>  velocity feedback low-pass, s (config id 12, persisted)",
+        "# R<float>  wheel speed set-point ramp, m/s^2 (config id 13, persisted)",
+        "# C<id>:<v> set a runtime config value (ids: see config_defs.lua)",
+        "# G<id>     read a runtime config value back",
+        "# A         calibrate motor R/L, re-tune current loop",
         "# ?         this list",
     };
     for (const char* entry : help) {
@@ -336,6 +448,17 @@ void handle_command(const char* command, MotorBackend& motor) {
             line_unsigned(line, value);
             break;
         }
+        case 'V': {
+            unsigned long value = 0;
+            if (!parse_unsigned(argument, value) || value > 1) {
+                send_error(command);
+                return;
+            }
+            set_points.diagnostics = value == 1;
+            line_text(line, "V=");
+            line_unsigned(line, value);
+            break;
+        }
         case 'C': {
             const char* colon = std::strchr(argument, ':');
             if (colon == nullptr) {
@@ -355,10 +478,64 @@ void handle_command(const char* command, MotorBackend& motor) {
                 send_error(command);
                 return;
             }
-            app_apply_config(static_cast<int32_t>(id), value);
+            if (!app_apply_config(static_cast<int32_t>(id), value)) {
+                // An unknown id or a value the module rejected (wrong range,
+                // backend without the knob): say so instead of echoing it.
+                send_error(command);
+                return;
+            }
             line_text(line, "C");
             line_unsigned(line, id);
             line_text(line, "=");
+            line_fixed(line, value, 3);
+            break;
+        }
+        case 'G': {
+            unsigned long id = 0;
+            if (!parse_unsigned(argument, id)) {
+                send_error(command);
+                return;
+            }
+            float value = 0.0f;
+            if (!app_get_config(static_cast<int32_t>(id), value)) {
+                send_error(command);
+                return;
+            }
+            line_text(line, "C");
+            line_unsigned(line, id);
+            line_text(line, "=");
+            line_fixed(line, value, 4);
+            break;
+        }
+        case 'L': {
+            float value = 0.0f;
+            if (!parse_float(argument, value)) {
+                send_error(command);
+                return;
+            }
+            // Config id 12 (persisted, readable with `G12`): the serial alias
+            // exists because the bench scripts predate the config ids.
+            if (!app_apply_config(CFG_VEL_LPF, value)) {
+                send_error(command);
+                return;
+            }
+            line_text(line, "L=");
+            line_fixed(line, value, 4);
+            break;
+        }
+        case 'R': {
+            float value = 0.0f;
+            if (!parse_float(argument, value)) {
+                send_error(command);
+                return;
+            }
+            // Config id 13 (persisted, readable with `G13`), same alias story
+            // as `L`.
+            if (!app_apply_config(CFG_SPEED_RAMP, value)) {
+                send_error(command);
+                return;
+            }
+            line_text(line, "R=");
             line_fixed(line, value, 3);
             break;
         }
@@ -369,6 +546,13 @@ void handle_command(const char* command, MotorBackend& motor) {
             }
             send_status(motor);
             return;
+        case 'A':
+            if (*argument != '\0') {
+                send_error(command);
+                return;
+            }
+            line_text(line, motor.auto_calibrate() ? "A=1" : "A=0");
+            break;
         case '?':
             send_help();
             return;
@@ -451,6 +635,8 @@ void serial_line_init() {
     rx_tail = 0;
     tx_head = 0;
     tx_tail = 0;
+    mirror_head = 0;
+    mirror_tail = 0;
     line_length = 0;
     line_overlong = false;
     line_noise = false;
@@ -465,6 +651,7 @@ void serial_line_init() {
 void serial_line_poll(MotorBackend& motor) {
     drain_receive(motor);
     tx_kick();
+    mirror_kick();
 
     if (!set_points.booted) {
         set_points.booted = true;
@@ -475,10 +662,23 @@ void serial_line_poll(MotorBackend& motor) {
         return;
     }
     const millis_t now = millis_32();
-    const millis_t period_ms = 1000u / set_points.telemetry_hz;
+    millis_t period_ms = 1000u / set_points.telemetry_hz;
+    if (set_points.diagnostics) {
+        // The `D` line carries the set-point and the velocity as well, so with
+        // diagnostics on it replaces the `S` line: one 96-character line per
+        // tick is what 115200 baud can carry at the shorter period below.
+        if (period_ms < DIAGNOSTICS_MIN_PERIOD_MS) {
+            period_ms = DIAGNOSTICS_MIN_PERIOD_MS;
+        }
+    }
     if ((now - set_points.telemetry_time) >= period_ms) {
         set_points.telemetry_time = now;
-        send_status(motor);
+        if (set_points.diagnostics) {
+            send_diagnostics(motor);
+        }
+        else {
+            send_status(motor);
+        }
     }
 }
 

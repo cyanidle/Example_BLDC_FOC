@@ -70,9 +70,11 @@ struct UART_HandleTypeDef {
     UART_TypeDef* Instance = nullptr;
     uint32_t gState = HAL_UART_STATE_READY;
     uint32_t RxState = HAL_UART_STATE_READY;
+    std::string* tx_capture = nullptr;
 };
 
 inline std::string fake_uart_tx;
+inline std::string fake_uart_mirror_tx;
 
 extern "C" void serial_line_rx_irq(void);
 
@@ -80,7 +82,8 @@ inline HAL_StatusTypeDef HAL_UART_Transmit_IT(UART_HandleTypeDef* huart, const u
     if (huart->gState != HAL_UART_STATE_READY) {
         return HAL_BUSY;
     }
-    fake_uart_tx.append(reinterpret_cast<const char*>(data), size);
+    (huart->tx_capture ? *huart->tx_capture : fake_uart_tx)
+        .append(reinterpret_cast<const char*>(data), size);
     return HAL_OK;
 }
 
