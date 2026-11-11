@@ -28,9 +28,31 @@ target_include_directories(current_guard PRIVATE
 target_compile_options(current_guard PRIVATE -Wall -Wextra -Wno-reorder)
 add_test(NAME current_guard COMMAND current_guard)
 
+add_executable(motor_limits
+    motor_limits.cpp
+)
+target_compile_features(motor_limits PRIVATE cxx_std_20)
+target_include_directories(motor_limits PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/../App
+)
+target_compile_options(motor_limits PRIVATE -Wall -Wextra -Wno-reorder)
+add_test(NAME motor_limits COMMAND motor_limits)
+
+add_executable(loop_trace
+    loop_trace.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../App/loop_trace.cpp
+)
+target_compile_features(loop_trace PRIVATE cxx_std_20)
+target_include_directories(loop_trace PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/../App
+)
+target_compile_options(loop_trace PRIVATE -Wall -Wextra -Wno-reorder)
+add_test(NAME loop_trace COMMAND loop_trace)
+
 add_executable(serial_line
     serial_line.cpp
     ${CMAKE_CURRENT_LIST_DIR}/../App/serial_line.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../App/loop_trace.cpp
 )
 target_compile_features(serial_line PRIVATE cxx_std_20)
 target_compile_definitions(serial_line PRIVATE

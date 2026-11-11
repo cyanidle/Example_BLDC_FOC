@@ -1,8 +1,10 @@
 #pragma once
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <memory>
 
 #include "main.h"
@@ -104,12 +106,21 @@ public:
 
     // Advance the applied set-point by at most `speed_ramp_m_s2 * dt_s` towards
     // the commanded one. Call once per speed-loop period, before run_speed_loop.
+    //
+    // The commanded value is clamped to the ceiling the backend reports
+    // (get_speed_ceiling): past it the current loops have no voltage authority
+    // and the phase current is set by the back-EMF instead, which is how a
+    // high target used to end at the gate driver's own fault. A clamped target
+    // is visible through is_target_clamped().
     void apply_speed_ramp(float dt_s) {
         if (!(dt_s > 0.0f)) return;
+        const float ceiling = speed_ceiling_m_s;
+        const float target = std::clamp(speed_target_m_s, -ceiling, ceiling);
+        target_clamped = std::abs(target - speed_target_m_s) > 1.0e-6f;
         const float step = speed_ramp_m_s2 * dt_s;
         float applied = speed_applied_m_s;
-        if (applied < speed_target_m_s) applied = std::min(speed_target_m_s, applied + step);
-        else if (applied > speed_target_m_s) applied = std::max(speed_target_m_s, applied - step);
+        if (applied < target) applied = std::min(target, applied + step);
+        else if (applied > target) applied = std::max(target, applied - step);
         if (applied == speed_applied_m_s) return;
         speed_applied_m_s = applied;
         set_wheel_speed_target(applied / wheel_radius_m);
@@ -118,6 +129,29 @@ public:
     // Set-point the drive is actually regulating right now, m/s.
     float get_applied_speed_target() const {
         return speed_applied_m_s;
+    }
+
+    // Set-point the caller last commanded, m/s (before the ceiling clamp).
+    float get_speed_target() const {
+        return speed_target_m_s;
+    }
+
+    // Largest wheel speed the backend can still regulate, m/s. The backend
+    // derives it from the live modulation ceiling and the drive's EMF constant
+    // and reports it here (SimpleFOC does it on every pass); infinite on a
+    // backend with no such model.
+    float get_speed_ceiling() const {
+        return speed_ceiling_m_s;
+    }
+
+    // True while the commanded target is being held at that ceiling.
+    bool is_target_clamped() const {
+        return target_clamped;
+    }
+
+    // Radius the façade converts with, m.
+    float wheel_radius() const {
+        return wheel_radius_m;
     }
 
     // The wheel diameter arrives over the config topic; every m/s value on this
@@ -235,6 +269,13 @@ protected:
         }
     };
 
+    // Backends report the largest wheel speed they can regulate here (SimpleFOC:
+    // motor_limits::reachable_wheel_rate of the live modulation ceiling). A
+    // non-finite or non-positive report leaves the drive uncompelled to stop.
+    void set_speed_ceiling(float m_s) {
+        speed_ceiling_m_s = (std::isfinite(m_s) && m_s > 0.0f) ? m_s : 0.0f;
+    }
+
     // Wheel angular velocity set-point, rad/s, produced by the speed ramp.
     virtual void set_wheel_speed_target(float wheel_rad_s) = 0;
     // Clear the regulator state of the running speed loop, if any.
@@ -244,6 +285,10 @@ private:
     float wheel_radius_m;
     float speed_target_m_s = 0.0f;   // commanded set-point, m/s
     float speed_applied_m_s = 0.0f;  // ramped set-point handed to the backend
+    // Ceiling the backend reports (see get_speed_ceiling); the routed target is
+    // clamped to it. Infinite until a backend says otherwise.
+    float speed_ceiling_m_s = std::numeric_limits<float>::infinity();
+    bool target_clamped = false;
     // 2 m/s² reaches the cart's top speed in about a second: the six-step
     // watchdog needs the shaft to move within NO_PROGRESS_MS of a command, and a
     // friction-bound wheel does not move at all from a 1 V step.

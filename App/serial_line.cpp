@@ -8,6 +8,7 @@
 #include <voltbro/utils.hpp>
 
 #include "config_ids.h"
+#include "loop_trace.h"
 #include "motor_backend.h"
 #include "usart.h"
 
@@ -320,6 +321,98 @@ void send_error(const char* command) {
     line_finish(line);
 }
 
+/* ---- Loop trace dump (`W`, `K`) ---------------------------------------------
+ * The ring buffer itself is App/loop_trace.*; this side owns the formatting and
+ * the pacing. A full dump is ~12 kB over a 115200 baud link into a 1 kB transmit
+ * ring, so it is emitted a few lines per poll pass (tx_write drops a message it
+ * cannot fit whole) and the telemetry is suspended until it is through. */
+struct TraceDump {
+    bool active = false;
+    size_t total = 0;
+    size_t next = 0;
+};
+TraceDump trace_dump;
+
+void send_counters() {
+    const volatile loop_trace::Counters& counters = loop_trace::counters();
+    Line line;
+    line_text(line, "# K hall_bad=");
+    line_unsigned(line, counters.hall_illegal);
+    line_text(line, " hall_edges=");
+    line_unsigned(line, counters.hall_counted);
+    line_text(line, " rate_bad=");
+    line_unsigned(line, counters.rate_implausible);
+    line_text(line, " angle_snap=");
+    line_unsigned(line, counters.angle_snap);
+    line_text(line, " guard=");
+    line_unsigned(line, counters.guard_trips);
+    line_text(line, " derate=");
+    line_unsigned(line, counters.derate_entries);
+    line_text(line, " driver=");
+    line_unsigned(line, counters.driver_faults);
+    line_text(line, " clamps=");
+    line_unsigned(line, counters.target_clamps);
+    line_finish(line);
+}
+
+void trace_begin_dump() {
+    // Lock first: the ring must stop advancing before its length is trusted.
+    loop_trace::lock(true);
+    trace_dump.total = loop_trace::count();
+    trace_dump.next = 0;
+    trace_dump.active = true;
+    Line line;
+    line_text(line, "# trace: samples=");
+    line_unsigned(line, (unsigned long)trace_dump.total);
+    line_text(line, " depth=");
+    line_unsigned(line, (unsigned long)loop_trace::DEPTH);
+    line_finish(line);
+}
+
+void trace_service() {
+    if (!trace_dump.active) {
+        return;
+    }
+    // Four ~90-character lines are 360 bytes: the transmit ring absorbs them
+    // between two passes of a poll that runs far faster than the link drains.
+    for (unsigned emitted = 0; emitted < 4 && trace_dump.next < trace_dump.total; ++emitted) {
+        const loop_trace::Sample& sample = loop_trace::at(trace_dump.next++);
+        Line line;
+        line_text(line, "# T ");
+        line_unsigned(line, (unsigned long)(sample.time_us / 1000u));
+        line_text(line, " e=");
+        line_fixed(line, sample.angle_error_rad * (180.0f / (pi2 * 0.5f)), 1);
+        line_text(line, " a=");
+        line_fixed(line, sample.angle_deg, 1);
+        line_text(line, " v=");
+        line_fixed(line, sample.velocity_rad_s, 3);
+        line_text(line, " iq=");
+        line_fixed(line, sample.q_current_a, 2);
+        line_text(line, " id=");
+        line_fixed(line, sample.d_current_a, 2);
+        line_text(line, " im=");
+        line_fixed(line, sample.phase_current_a, 2);
+        line_text(line, " uq=");
+        line_fixed(line, sample.q_voltage_v, 2);
+        line_text(line, " ud=");
+        line_fixed(line, sample.d_voltage_v, 2);
+        line_text(line, " b=");
+        line_fixed(line, sample.bus_voltage_v, 1);
+        line_text(line, " h=");
+        line_unsigned(line, sample.hall_raw);
+        line_text(line, " ev=");
+        line_unsigned(line, sample.flags);
+        line_finish(line);
+    }
+    if (trace_dump.next >= trace_dump.total) {
+        trace_dump.active = false;
+        loop_trace::lock(false);
+        Line line;
+        line_text(line, "# trace end");
+        line_finish(line);
+    }
+}
+
 void send_help() {
     static const char* const help[] = {
         "# T<float>  target wheel speed, m/s",
@@ -333,6 +426,9 @@ void send_help() {
         "# R<float>  wheel speed set-point ramp, m/s^2 (config id 13, persisted)",
         "# C<id>:<v> set a runtime config value (ids: see config_defs.lua)",
         "# G<id>     read a runtime config value back",
+        "# K         loop-trace event counters (`# K ...`)",
+        "# W         dump the loop trace now (`# T ...` lines)",
+        "# W<0|1>    arm the automatic trace dump (0/1)",
         "# A         calibrate motor R/L, re-tune current loop",
         "# ?         this list",
     };
@@ -507,6 +603,30 @@ void handle_command(const char* command, MotorBackend& motor) {
             line_fixed(line, value, 4);
             break;
         }
+        case 'K':
+            if (*argument != '\0') {
+                send_error(command);
+                return;
+            }
+            send_counters();
+            return;
+        case 'W': {
+            if (*argument == '\0') {
+                // Dump the last DEPTH samples: what the loop saw before, and
+                // at, the moment this was asked for.
+                trace_begin_dump();
+                return;
+            }
+            unsigned long value = 0;
+            if (!parse_unsigned(argument, value) || value > 1) {
+                send_error(command);
+                return;
+            }
+            loop_trace::arm(value == 1);
+            line_text(line, "W=");
+            line_unsigned(line, value);
+            break;
+        }
         case 'L': {
             float value = 0.0f;
             if (!parse_float(argument, value)) {
@@ -656,6 +776,17 @@ void serial_line_poll(MotorBackend& motor) {
     if (!set_points.booted) {
         set_points.booted = true;
         send_boot_trace(motor);
+    }
+
+    // A trigger latched by the loop (a Hall event, an angle snap, a guard trip,
+    // a driver fault) turns into a dump here; the telemetry waits until the
+    // dump is through so the link carries the history in one piece.
+    if (loop_trace::take_trigger()) {
+        trace_begin_dump();
+    }
+    if (trace_dump.active) {
+        trace_service();
+        return;
     }
 
     if (set_points.telemetry_hz == 0) {

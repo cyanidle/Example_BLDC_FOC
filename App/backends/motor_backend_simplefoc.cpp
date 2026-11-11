@@ -6,6 +6,8 @@
 #include "Arduino.h"
 #include "app.h"
 #include "current_guard.h"
+#include "loop_trace.h"
+#include "motor_limits.h"
 #include "motor_tuning.h"
 #include "serial_line.h"
 #include "BLDCMotor.h"
@@ -102,6 +104,14 @@ private:
     // Rates beyond this are physically impossible for this drive and are
     // treated as Hall jitter (motor side).
     float rate_limit_rad_s = 0.0f;
+    // Loop-trace inputs (App/loop_trace.h): the last angle residual the tracker
+    // worked against, and how often the two failure modes fired — a snap means
+    // the estimate had to be yanked onto a sector boundary (the rotor is not
+    // where the count says), an implausible rate means an edge interval the
+    // drive's EMF could not have produced (a bounce, or an edge lost).
+    float last_error_rad = 0.0f;
+    uint32_t snap_count = 0;
+    uint32_t implausible_rate_count = 0;
 
     static float wrap_2pi(float angle) {
         if (angle < 0.0f) return angle + _2PI;
@@ -115,6 +125,12 @@ public:
     void set_velocity_scale(float scale) {
         velocity_scale = scale;
     }
+
+    // Diagnostics for the loop trace.
+    float get_last_error_rad() const { return last_error_rad; }
+    float get_tracked_angle_rad() const { return tracked_angle; }
+    uint32_t get_snap_count() const { return snap_count; }
+    uint32_t get_implausible_rate_count() const { return implausible_rate_count; }
 
     // Ceiling a single rate sample may report, motor rad/s (see
     // simplefoc_hall_rate_plausible_multiple).
@@ -154,6 +170,7 @@ public:
         float error = centre - tracked_angle;
         if (error > _PI) error -= _2PI;
         else if (error < -_PI) error += _2PI;
+        last_error_rad = error;
         // Only the reported sector is evidence: never pull the estimate across
         // more than half a sector, so a wrong rate shows up as a bounded offset
         // instead of a slip into the wrong sector.
@@ -168,10 +185,12 @@ public:
         if (error > half) {
             tracked_angle = wrap_2pi(centre - half);
             error = half;
+            ++snap_count;
         }
         else if (error < -half) {
             tracked_angle = wrap_2pi(centre + half);
             error = -half;
+            ++snap_count;
         }
         sector_centre = centre;
         const float gain = dt / (dt + tuning::simplefoc_hall_angle_tau_s);
@@ -208,6 +227,7 @@ public:
             last_counts = counts;
             last_velocity_us = now;
             if (!plausible) {
+                ++implausible_rate_count;
                 return velocity;
             }
             motor_rate_rad_s = rate;
@@ -266,6 +286,7 @@ public:
 
 class SimpleFocBackend final: public MotorBackend {
 private:
+    HallSensor& halls;
     HallSensorAdapter sensor;
     BaseInverter& inverter;
     InverterCurrentSense current_sense;
@@ -324,6 +345,88 @@ private:
     // down while the filtered current is over the limit and recovers at the
     // ramp rate below it, so a Q step accelerates the wheel current-limited.
     float voltage_ceiling_v = 0.0f;
+    // Back-EMF per wheel rad/s, V/(rad/s): DriveInfo::torque_const is volts per
+    // ROTOR rad/s, the gearbox scales it to the wheel side. Every voltage and
+    // speed budget below is this number against the modulation ceiling.
+    float emf_per_wheel_rad_s = 0.0f;
+    // Loop trace (App/loop_trace.h): counters this backend owns, plus the
+    // snapshot the sample flags are diffed against.
+    uint32_t guard_trip_count = 0;
+    uint32_t derate_entry_count = 0;
+    uint32_t driver_fault_count = 0;
+    uint32_t target_clamp_count = 0;
+    micros_t trace_time_us = 0;
+    loop_trace::Counters trace_seen = {};
+    bool trace_derated = false;
+    bool trace_clamped = false;
+    bool trace_guard_counted = false;
+    bool clamp_logged = false;
+
+    // One trace sample: the loop state plus the events since the previous
+    // sample, so a dump reads as a timeline. Counters owned elsewhere (the Hall
+    // decoder, the angle tracker) are mirrored into the trace's block here.
+    void push_trace_sample(micros_t now) {
+        if (loop_trace::locked()) {
+            return;
+        }
+        const uint32_t now_us = (uint32_t)now;
+        if (trace_time_us != 0 &&
+            (uint32_t)(now_us - (uint32_t)trace_time_us) < tuning::simplefoc_trace_period_us) {
+            return;
+        }
+        trace_time_us = now;
+
+        loop_trace::Counters& counters = loop_trace::counters();
+        counters.hall_illegal = halls.get_illegal_transitions();
+        counters.hall_counted = halls.get_counted_edges();
+        counters.rate_implausible = sensor.get_implausible_rate_count();
+        counters.angle_snap = sensor.get_snap_count();
+        counters.guard_trips = guard_trip_count;
+        counters.derate_entries = derate_entry_count;
+        counters.driver_faults = driver_fault_count;
+        counters.target_clamps = target_clamp_count;
+
+        loop_trace::Sample sample = {};
+        sample.time_us = now_us;
+        sample.angle_error_rad = sensor.get_last_error_rad();
+        sample.angle_deg = sensor.get_tracked_angle_rad() * (180.0f / (pi2 * 0.5f));
+        sample.velocity_rad_s = motor.shaft_velocity;
+        sample.q_current_a = motor.current.q;
+        sample.d_current_a = motor.current.d;
+        const PhaseCurrent_s phase = current_sense.getPhaseCurrents();
+        sample.phase_current_a = current_guard::phase_current_magnitude(
+            phase.a, phase.b, phase.c
+        );
+        sample.q_voltage_v = motor.voltage.q;
+        sample.d_voltage_v = motor.voltage.d;
+        sample.bus_voltage_v = inverter.get_busV();
+        sample.hall_raw = (uint8_t)halls.get_step();
+        sample.flags = 0;
+        if (counters.angle_snap != trace_seen.angle_snap) sample.flags |= loop_trace::ANGLE_SNAP;
+        if (counters.hall_illegal != trace_seen.hall_illegal) sample.flags |= loop_trace::HALL_ILLEGAL;
+        if (counters.rate_implausible != trace_seen.rate_implausible) {
+            sample.flags |= loop_trace::RATE_IMPLAUSIBLE;
+        }
+        if (counters.guard_trips != trace_seen.guard_trips) sample.flags |= loop_trace::GUARD_TRIP;
+        if (counters.derate_entries != trace_seen.derate_entries) {
+            sample.flags |= loop_trace::SUPPLY_DERATE;
+        }
+        if (counters.driver_faults != trace_seen.driver_faults) {
+            sample.flags |= loop_trace::DRIVER_FAULT;
+        }
+        if (counters.target_clamps != trace_seen.target_clamps) {
+            sample.flags |= loop_trace::TARGET_CLAMPED;
+        }
+        trace_seen = counters;
+
+        const bool clamped = is_target_clamped();
+        if (clamped && !trace_clamped) {
+            ++target_clamp_count;
+        }
+        trace_clamped = clamped;
+
+        loop_trace::push(sample);
+    }
 
     void apply_velocity_pid() {
         motor.PID_velocity.P = velocity_pid.kp;
@@ -407,6 +510,7 @@ public:
         float wheel_radius_m
     ):
         MotorBackend(wheel_radius_m),
+        halls(hall),
         sensor(hall),
         inverter(inverter_),
         current_sense(inverter_),
@@ -421,7 +525,7 @@ public:
         // the EMF constant (torque_const, V per rotor rad/s) times the gearbox
         // ratio is the phase voltage per wheel rad/s, and the modulation ceiling
         // divided by it is the top rotor rate this supply can drive.
-        const float emf_per_wheel_rad_s =
+        emf_per_wheel_rad_s =
             drive_info.torque_const * (float)drive_info.common.gear_ratio;
         regulator_reset_wheel_rate =
             tuning::simplefoc_current_loop_v_floor *
@@ -577,13 +681,29 @@ public:
             // The current loops output phase volts, and the velocity loop
             // outputs the q-current set-point, so both limits follow the bus.
             const float speed_abs = std::abs(motor.shaft_velocity);
-            const float low_speed_v = tuning::simplefoc_current_loop_v_floor +
-                tuning::simplefoc_current_loop_v_per_rad_s * speed_abs;
+            // The current loop has to be able to apply the back-EMF plus the
+            // low-speed floor at the speed the wheel is running. Sized from the
+            // drive's EMF constant (not from a fixed V/(rad/s) guess): a cap
+            // that trails the EMF cannot hold the current at speed, and the
+            // vector it saturates to brakes harder the faster the wheel turns.
+            const float low_speed_v = motor_limits::current_loop_voltage_limit(
+                emf_per_wheel_rad_s, speed_abs, tuning::simplefoc_current_loop_v_floor
+            );
             const float current_loop_v = std::min(motor.voltage_limit, low_speed_v);
             motor.PID_current_q.limit = current_loop_v;
             motor.PID_current_d.limit = current_loop_v;
             motor.PID_velocity.limit =
                 std::min(velocity_pid.max_output, motor.current_limit) * supply_derate;
+            // Largest wheel speed this rail can still regulate; the façade
+            // clamps the speed target to it, so a command past the modulation
+            // ceiling cannot saturate the current loops (see motor_limits.h).
+            set_speed_ceiling(
+                motor_limits::reachable_wheel_rate(
+                    motor.voltage_limit,
+                    emf_per_wheel_rad_s,
+                    tuning::simplefoc_current_loop_v_floor
+                ) * wheel_radius()
+            );
             // The bus rail is the only supply-current proxy this board has.
             // Braking pushes energy back into it and the bench supply neither
             // sinks nor tolerates it: a stop from 0.3 m/s raised the rail to
@@ -598,12 +718,19 @@ public:
                 // Immediate: the rail crosses these thresholds in tens of
                 // milliseconds, so there is no time to ramp the demand down.
                 supply_derate = 0.0f;
+                if (!trace_derated) {
+                    trace_derated = true;
+                    ++derate_entry_count;
+                }
             }
-            else if (bus_voltage > tuning::simplefoc_supply_derate_full_v) {
-                supply_derate = std::min(
-                    1.0f,
-                    supply_derate + tuning::simplefoc_supply_derate_rate_per_s * dt_s
-                );
+            else {
+                trace_derated = false;
+                if (bus_voltage > tuning::simplefoc_supply_derate_full_v) {
+                    supply_derate = std::min(
+                        1.0f,
+                        supply_derate + tuning::simplefoc_supply_derate_rate_per_s * dt_s
+                    );
+                }
             }
             voltage_ceiling_v = std::min(voltage_ceiling_v, motor.voltage_limit * supply_derate);
         }
@@ -628,6 +755,7 @@ public:
         if (driver_fault_asserted()) {
             if (!driver_fault_active) {
                 serial_line_debug("simplefoc: gate driver FAULT, bridge parked");
+                ++driver_fault_count;
             }
             driver_fault_active = true;
             driver_fault_release_s = 0.0f;
@@ -666,6 +794,7 @@ public:
         // the serial `E` channel).
         if (guard.is_tripped() && voltage_target == 0.0f && speed_target == 0.0f) {
             guard.reset();
+            trace_guard_counted = false;
             if (guard_parked) {
                 guard_parked = false;
                 serial_line_debug("simplefoc: guard re-armed");
@@ -692,6 +821,10 @@ public:
             dt_s
         );
         if (guard.is_tripped()) {
+            if (!trace_guard_counted) {
+                trace_guard_counted = true;
+                ++guard_trip_count;
+            }
             fault = guard_fault == current_guard::Fault::OVERCURRENT ?
                 MotorFault::OVERCURRENT : MotorFault::STALLED;
             voltage_applied = 0.0f;
@@ -769,6 +902,17 @@ public:
         else {
             torque_current_a = current_sense.getFOCCurrents(motor.electrical_angle).q;
         }
+
+        // A target past the modulation ceiling is refused instead of chased
+        // (the current loops have no authority there), so say so once per
+        // clamp episode rather than letting the wheel quietly under-run.
+        const bool clamped = is_target_clamped();
+        if (clamped && !clamp_logged) {
+            serial_line_debug("simplefoc: target clamped, ceiling (m/s)", get_speed_ceiling());
+        }
+        clamp_logged = clamped;
+
+        push_trace_sample(now);
     }
 
     void set_voltage_point(float volts) override {

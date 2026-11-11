@@ -109,15 +109,20 @@ constexpr float simplefoc_motor_voltage_limit_v = 17.0f;
 // the top speed.
 constexpr float simplefoc_modulation_headroom = 0.9f;
 constexpr float simplefoc_current_limit_a = 8.0f;
-// Low-speed clamp of the d/q current-loop output, V and V per wheel rad/s.
-// Below a few hundred rpm the back-EMF is small, so holding a current costs
-// only a fraction of a volt; a bigger voltage there drives the real current to
-// V/phase-R (20+ A) long before the loop can unwind, which is the audible hit
-// heard when a spinning wheel is reversed or stopped (bench: a reversal from
-// +0.3 m/s tripped the gate driver's own protection at the zero crossing). The
-// clamp follows the back-EMF with speed, so it never limits normal operation.
+// Low-speed clamp of the d/q current-loop output, V, and the adder above it:
+// the limit is `floor_v + EMF-per-wheel-rad/s * |speed|` (motor_limits.h), the
+// floor covering phase IR and one-pass transients, so the loops can always hold
+// the current they are asked for. Below a few hundred rpm the back-EMF is
+// small, so holding a current costs only a fraction of a volt; a bigger voltage
+// there drives the real current to V/phase-R (20+ A) long before the loop can
+// unwind, which is the audible hit heard when a spinning wheel is reversed or
+// stopped (bench: a reversal from +0.3 m/s tripped the gate driver's own
+// protection at the zero crossing). The clamp follows the back-EMF with speed,
+// so it never limits normal operation. A fixed 3.2 V per wheel rad/s was tried
+// instead of the EMF constant and trailed it (4.42 V per wheel rad/s on this
+// drive), turning the limit into a speed-dependent brake past ~0.21 m/s — the
+// speed loop then hunts wherever the limit crosses the EMF.
 constexpr float simplefoc_current_loop_v_floor = 1.6f;
-constexpr float simplefoc_current_loop_v_per_rad_s = 3.2f;
 // Supply derate (see the derate block in the SimpleFOC backend). The torque
 // demand is pulled towards zero while the rail is outside [low_v, over_v] and
 // restored once it is back above full_v: under `low_v` the supply is being
@@ -134,6 +139,10 @@ constexpr float simplefoc_supply_derate_rate_per_s = 4.0f;
 constexpr float simplefoc_driver_fault_quiet_s = 0.1f;
 constexpr float simplefoc_max_shaft_velocity_rad_s = 1000.0f;
 constexpr uint32_t simplefoc_velocity_timeout_ms = 100;
+// Loop-trace sampling period, us (App/loop_trace.h). 400 us gives a 2.5 kHz
+// view of the loop over the 128-sample ring: ~51 ms of history, enough to hold
+// the few periods before and after a stutter.
+constexpr uint32_t simplefoc_trace_period_us = 400;
 
 // d/q current regulators (SimpleFOC PID_current_q / PID_current_d), V per A.
 // Bench-tuned: `A` (characteriseMotor + tuneCurrentController) measured

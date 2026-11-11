@@ -5,6 +5,7 @@
 #include <string>
 
 #include "config_ids.h"
+#include "loop_trace.h"
 #include "motor_backend.h"
 #include "serial_line.h"
 #include "usart.h"
@@ -482,6 +483,47 @@ void test_lpf_ramp_alias_config(FakeMotor& motor) {
     CHECK(take_tx() == "L=0.0200\r\n");
 }
 
+void test_trace_counters_and_dump(FakeMotor& motor) {
+    loop_trace::reset();
+    send(motor, "K\n");
+    CHECK(take_tx().rfind("# K hall_bad=0 hall_edges=0", 0) == 0);
+
+    // Arming: the next sample carrying a suspicious event starts the dump.
+    send(motor, "W1\n");
+    CHECK(take_tx() == "W=1\r\n");
+    CHECK(loop_trace::armed());
+
+    loop_trace::Sample sample = {};
+    sample.time_us = 123456;
+    sample.velocity_rad_s = 0.9375f;
+    sample.phase_current_a = 3.5f;
+    sample.hall_raw = 5;
+    sample.flags = loop_trace::HALL_ILLEGAL;
+    loop_trace::push(sample);
+    CHECK(!loop_trace::armed());
+
+    pump(motor);
+    std::string dump = take_tx();
+    CHECK(dump.rfind("# trace: samples=1 depth=", 0) == 0);
+    CHECK(dump.find("# T 123 e=") != std::string::npos);
+    CHECK(dump.find(" im=3.50") != std::string::npos);
+    CHECK(dump.find(" h=5") != std::string::npos);
+    CHECK(dump.find(" ev=2") != std::string::npos);
+    CHECK(dump.find("# trace end") != std::string::npos);
+    // The dump unlocks the ring so the loop can fill it again.
+    CHECK(!loop_trace::locked());
+
+    send(motor, "W\n");
+    std::string replay = take_tx();
+    CHECK(replay.rfind("# trace: samples=1", 0) == 0);
+    CHECK(replay.find("# trace end") != std::string::npos);
+
+    // An unarmed event must not produce a dump on its own.
+    loop_trace::push(sample);
+    pump(motor);
+    CHECK(take_tx().empty());
+}
+
 }
 
 int main() {
@@ -526,6 +568,7 @@ int main() {
     test_config_command(motor);
     test_config_readback(motor);
     test_lpf_ramp_alias_config(motor);
+    test_trace_counters_and_dump(motor);
 
     std::cout << "serial_line: all checks passed\n";
     return 0;

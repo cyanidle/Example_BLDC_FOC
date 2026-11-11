@@ -63,6 +63,25 @@ class MotorBackend;
  *               measured and the current PID gains re-derived from them; the
  *               values arrive as "# simplefoc calibrate: ..." debug lines and
  *               the gains live until reboot. Zero the set-points first.)
+ *   K          loop-trace event counters, one line -> "# K hall_bad=<n>
+ *              hall_edges=<n> rate_bad=<n> angle_snap=<n> guard=<n>
+ *              derate=<n> driver=<n> clamps=<n>"
+ *              (Hall transitions no single step explains, counted edges,
+ *               rate samples the drive could not have produced, times the
+ *               angle estimate had to be snapped onto a sector boundary,
+ *               guard trips, supply-derate entries, gate-driver faults and
+ *               speed-target clamps: the counters that say whether a stutter
+ *               came from the decoder, the tracker or the protection.)
+ *   W          dump the loop trace now       -> "# trace: samples=<n> depth=128"
+ *              then one "# T <ms> e=<deg> a=<deg> v=<rad/s> iq=<A> id=<A>
+ *              im=<A> uq=<V> ud=<V> b=<V> h=<0..7> ev=<bits>" line per sample
+ *              (oldest first) and "# trace end"
+ *   W<0|1>     arm (1) / disarm (0) the automatic dump -> W=<0|1>
+ *              (while armed, the first sample that carries a Hall anomaly, an
+ *               angle snap, a guard trip or a driver fault starts the dump;
+ *               App/loop_trace.h holds ~51 ms at 2.5 kHz, which is the history
+ *               a 100 Hz D line cannot show. The dump takes over the link for
+ *               ~1 s and the telemetry resumes afterwards.)
  *   ?          command list                  -> one "# ..." line per command
  *   anything else                            -> ERR <line>
  *
