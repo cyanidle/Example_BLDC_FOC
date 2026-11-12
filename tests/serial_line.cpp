@@ -217,9 +217,14 @@ void test_full_scale_rescales_the_latched_target(FakeMotor& motor) {
     CHECK(std::abs(motor.get_speed_target() - 0.15f) < 1e-6f);
 
     motor.set_speed_target(0.0f);
-    send(motor, "C16:0.5\n");
+    send(motor, "C16:0.25\n");
     take_tx();
     CHECK(motor.get_speed_target() == 0.0f);
+
+    // Back to the compiled default, which the radius test below assumes.
+    send(motor, "C16:0.5\n");
+    take_tx();
+    CHECK(std::abs(motor.get_max_speed() - 0.5f) < 1e-6f);
 }
 
 void test_speed_target_uses_wheel_radius(FakeMotor& motor) {
