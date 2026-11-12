@@ -113,6 +113,14 @@ private:
     // drive's range.
     float last_error_rad = 0.0f;
     uint32_t implausible_rate_count = 0;
+    // Blame counters for the stutter hunt (see loop_trace.h): how often the
+    // estimate had to be pulled onto a sector edge (a phase discontinuity of up
+    // to half a sector), how often it free-ran across 0/2pi (one rotor
+    // revolution, the absolute-angle wrap), and how often the rate sample
+    // timed out (no Hall edge for simplefoc_velocity_timeout_ms).
+    uint32_t sector_snap_count = 0;
+    uint32_t wrap_count = 0;
+    uint32_t velocity_timeout_count = 0;
 
     static float wrap_2pi(float angle) {
         if (angle < 0.0f) return angle + _2PI;
@@ -131,6 +139,9 @@ public:
     float get_last_error_rad() const { return last_error_rad; }
     float get_tracked_angle_rad() const { return tracked_angle; }
     uint32_t get_implausible_rate_count() const { return implausible_rate_count; }
+    uint32_t get_sector_snap_count() const { return sector_snap_count; }
+    uint32_t get_wrap_count() const { return wrap_count; }
+    uint32_t get_velocity_timeout_count() const { return velocity_timeout_count; }
 
     // Ceiling a single rate sample may report, motor rad/s (see
     // simplefoc_hall_rate_plausible_multiple).
@@ -166,7 +177,11 @@ public:
         if (!(dt > 0.0f)) {
             return tracked_angle;
         }
-        tracked_angle = wrap_2pi(tracked_angle + prediction_rate_rad_s * dt);
+        const float free_run = tracked_angle + prediction_rate_rad_s * dt;
+        tracked_angle = wrap_2pi(free_run);
+        if (free_run < 0.0f || free_run >= _2PI) {
+            ++wrap_count;
+        }
         float error = centre - tracked_angle;
         if (error > _PI) error -= _2PI;
         else if (error < -_PI) error += _2PI;
@@ -185,10 +200,12 @@ public:
         if (error > half) {
             tracked_angle = wrap_2pi(centre - half);
             error = half;
+            ++sector_snap_count;
         }
         else if (error < -half) {
             tracked_angle = wrap_2pi(centre + half);
             error = -half;
+            ++sector_snap_count;
         }
         sector_centre = centre;
         const float gain = dt / (dt + tuning::simplefoc_hall_angle_tau_s);
@@ -234,6 +251,7 @@ public:
             prediction_rate_rad_s += alpha * (motor_rate_rad_s - prediction_rate_rad_s);
         }
         else if (dt_us >= (int64_t)tuning::simplefoc_velocity_timeout_ms * 1000) {
+            ++velocity_timeout_count;
             motor_rate_rad_s = 0.0f;
             prediction_rate_rad_s = 0.0f;
             velocity = 0.0f;
@@ -348,15 +366,30 @@ private:
     // speed budget below is this number against the modulation ceiling.
     float emf_per_wheel_rad_s = 0.0f;
     // Loop trace (App/loop_trace.h): counters this backend owns, plus the
-    // snapshot the sample flags are diffed against.
-    uint32_t guard_trip_count = 0;
-    uint32_t derate_entry_count = 0;
+    // snapshot the sample flags are diffed against. One counter per mechanism
+    // that can stop the drive or take authority from a regulator, so a stutter
+    // can be attributed instead of guessed at (see loop_trace::Counters).
+    uint32_t guard_overcurrent_count = 0;
+    uint32_t guard_stalled_count = 0;
+    uint32_t derate_high_count = 0;
+    uint32_t derate_low_count = 0;
     uint32_t driver_fault_count = 0;
     uint32_t target_clamp_count = 0;
+    uint32_t current_limit_count = 0;
+    uint32_t voltage_limit_count = 0;
+    uint32_t brake_clamp_count = 0;
+    uint32_t coast_entry_count = 0;
+    uint32_t regulator_reset_count = 0;
+    uint32_t slow_loop_count = 0;
+    uint32_t loop_max_us = 0;
+    // Rising-edge latches, so a counter counts episodes of a limit being
+    // active and not every control pass it stays active for.
+    bool current_limit_active = false;
+    bool voltage_limit_active = false;
+    bool brake_clamp_active = false;
     micros_t trace_time_us = 0;
     loop_trace::Counters trace_seen = {};
     bool trace_derated = false;
-    bool trace_clamped = false;
     bool trace_guard_counted = false;
     bool clamp_logged = false;
 
@@ -378,10 +411,24 @@ private:
         counters.hall_illegal = halls.get_illegal_transitions();
         counters.hall_counted = halls.get_counted_edges();
         counters.rate_implausible = sensor.get_implausible_rate_count();
-        counters.guard_trips = guard_trip_count;
-        counters.derate_entries = derate_entry_count;
+        counters.angle_snaps = sensor.get_sector_snap_count();
+        counters.angle_wraps = sensor.get_wrap_count();
+        counters.velocity_timeouts = sensor.get_velocity_timeout_count();
+        counters.guard_overcurrent = guard_overcurrent_count;
+        counters.guard_stalled = guard_stalled_count;
+        counters.guard_trips = guard_overcurrent_count + guard_stalled_count;
+        counters.derate_high = derate_high_count;
+        counters.derate_low = derate_low_count;
+        counters.derate_entries = derate_high_count + derate_low_count;
         counters.driver_faults = driver_fault_count;
         counters.target_clamps = target_clamp_count;
+        counters.current_limits = current_limit_count;
+        counters.voltage_limits = voltage_limit_count;
+        counters.brake_clamps = brake_clamp_count;
+        counters.coast_entries = coast_entry_count;
+        counters.regulator_resets = regulator_reset_count;
+        counters.slow_loops = slow_loop_count;
+        counters.loop_max_us = loop_max_us;
 
         loop_trace::Sample sample = {};
         sample.time_us = now_us;
@@ -399,29 +446,34 @@ private:
         sample.bus_voltage_v = inverter.get_busV();
         sample.hall_raw = (uint8_t)halls.get_step();
         sample.flags = 0;
-        if (counters.hall_illegal != trace_seen.hall_illegal) sample.flags |= loop_trace::HALL_ILLEGAL;
-        if (counters.rate_implausible != trace_seen.rate_implausible) {
-            sample.flags |= loop_trace::RATE_IMPLAUSIBLE;
-        }
-        if (counters.guard_trips != trace_seen.guard_trips) sample.flags |= loop_trace::GUARD_TRIP;
-        if (counters.derate_entries != trace_seen.derate_entries) {
-            sample.flags |= loop_trace::SUPPLY_DERATE;
-        }
-        if (counters.driver_faults != trace_seen.driver_faults) {
-            sample.flags |= loop_trace::DRIVER_FAULT;
-        }
-        if (counters.target_clamps != trace_seen.target_clamps) {
-            sample.flags |= loop_trace::TARGET_CLAMPED;
-        }
+        mark(sample.flags, counters.hall_illegal, trace_seen.hall_illegal, loop_trace::HALL_ILLEGAL);
+        mark(sample.flags, counters.rate_implausible, trace_seen.rate_implausible, loop_trace::RATE_IMPLAUSIBLE);
+        mark(sample.flags, counters.angle_snaps, trace_seen.angle_snaps, loop_trace::ANGLE_SNAP);
+        mark(sample.flags, counters.angle_wraps, trace_seen.angle_wraps, loop_trace::ANGLE_WRAP);
+        mark(sample.flags, counters.velocity_timeouts, trace_seen.velocity_timeouts,
+             loop_trace::VELOCITY_TIMEOUT);
+        mark(sample.flags, counters.guard_trips, trace_seen.guard_trips, loop_trace::GUARD_TRIP);
+        mark(sample.flags, counters.derate_entries, trace_seen.derate_entries, loop_trace::SUPPLY_DERATE);
+        mark(sample.flags, counters.driver_faults, trace_seen.driver_faults, loop_trace::DRIVER_FAULT);
+        mark(sample.flags, counters.current_limits, trace_seen.current_limits, loop_trace::CURRENT_LIMIT);
+        mark(sample.flags, counters.voltage_limits, trace_seen.voltage_limits, loop_trace::VOLTAGE_LIMIT);
+        mark(sample.flags, counters.brake_clamps, trace_seen.brake_clamps, loop_trace::BRAKE_CLAMP);
+        mark(sample.flags, counters.coast_entries, trace_seen.coast_entries, loop_trace::COAST);
+        mark(sample.flags, counters.regulator_resets, trace_seen.regulator_resets,
+             loop_trace::REGULATOR_RESET);
+        mark(sample.flags, counters.slow_loops, trace_seen.slow_loops, loop_trace::SLOW_LOOP);
+        // A clamped target is a state, not an event: the set-point either is
+        // held below the ceiling right now or it is not.
+        if (is_target_clamped()) sample.flags |= loop_trace::TARGET_CLAMPED;
         trace_seen = counters;
 
-        const bool clamped = is_target_clamped();
-        if (clamped && !trace_clamped) {
-            ++target_clamp_count;
-        }
-        trace_clamped = clamped;
-
         loop_trace::push(sample);
+    }
+
+    static void mark(uint16_t& flags, uint32_t now, uint32_t seen, loop_trace::Flag flag) {
+        if (now != seen) {
+            flags = (uint16_t)(flags | (uint16_t)flag);
+        }
     }
 
     void apply_velocity_pid() {
@@ -445,6 +497,7 @@ private:
     }
 
     void reset_torque_regulators() {
+        ++regulator_reset_count;
         motor.PID_velocity.reset();
         // reset() clears the PID states but not the set-point SimpleFOC is
         // holding: a voltage-mode value (V) surviving into current mode would
@@ -676,6 +729,15 @@ public:
         // stall long enough to make dt useless skips the step for this pass.
         const float dt_s =
             (elapsed_us > 0 && elapsed_us <= 500000) ? (float)elapsed_us * 1e-6f : 0.0f;
+        // A control period past its budget is the prime suspect for a stutter:
+        // while it lasts the bridge holds the last vector and the rotor turns
+        // through it. Counted per overrun, with the worst case since boot.
+        if (elapsed_us > (int64_t)tuning::simplefoc_loop_overrun_us) {
+            ++slow_loop_count;
+        }
+        if (elapsed_us > 0 && (uint32_t)elapsed_us > loop_max_us) {
+            loop_max_us = (uint32_t)elapsed_us;
+        }
 
         inverter.update();
         const float bus_voltage = inverter.get_busV();
@@ -726,7 +788,15 @@ public:
                 supply_derate = 0.0f;
                 if (!trace_derated) {
                     trace_derated = true;
-                    ++derate_entry_count;
+                    // Which side of the window: the droop side is a supply that
+                    // cannot feed the demand, the high side is the load pushing
+                    // energy back into a supply that cannot sink it.
+                    if (rail_high) {
+                        ++derate_high_count;
+                    }
+                    else {
+                        ++derate_low_count;
+                    }
                 }
             }
             else {
@@ -829,7 +899,12 @@ public:
         if (guard.is_tripped()) {
             if (!trace_guard_counted) {
                 trace_guard_counted = true;
-                ++guard_trip_count;
+                if (guard_fault == current_guard::Fault::OVERCURRENT) {
+                    ++guard_overcurrent_count;
+                }
+                else {
+                    ++guard_stalled_count;
+                }
             }
             fault = guard_fault == current_guard::Fault::OVERCURRENT ?
                 MotorFault::OVERCURRENT : MotorFault::STALLED;
@@ -918,9 +993,32 @@ public:
         // clamp episode rather than letting the wheel quietly under-run.
         const bool clamped = is_target_clamped();
         if (clamped && !clamp_logged) {
+            ++target_clamp_count;
             serial_line_debug("simplefoc: target clamped, ceiling (m/s)", get_speed_ceiling());
         }
         clamp_logged = clamped;
+
+        // Which regulator ran out of authority this pass. The velocity loop
+        // output is the q-current demand; the current loops output phase volts,
+        // and each saturating at its own limit is a different explanation for a
+        // wheel that will not hold its speed.
+        const float current_demand = std::abs(motor.current_sp);
+        const bool at_current_limit = speed_mode && motor.enabled &&
+            motor.PID_velocity.limit > 0.0f &&
+            current_demand >= motor.PID_velocity.limit * 0.999f;
+        if (at_current_limit && !current_limit_active) {
+            ++current_limit_count;
+        }
+        current_limit_active = at_current_limit;
+
+        const float current_loop_limit = motor.PID_current_q.limit;
+        const bool at_voltage_limit = motor.enabled && current_loop_limit > 0.0f &&
+            (std::abs(motor.voltage.q) >= current_loop_limit * 0.999f ||
+             std::abs(motor.voltage.d) >= current_loop_limit * 0.999f);
+        if (at_voltage_limit && !voltage_limit_active) {
+            ++voltage_limit_count;
+        }
+        voltage_limit_active = at_voltage_limit;
 
         push_trace_sample(now);
     }
@@ -937,6 +1035,7 @@ public:
             motor.torque_controller = TorqueControlType::foc_current;
             if (!coast_mode) {
                 coast_mode = true;
+                ++coast_entry_count;
                 coast_current_a = motor.enabled ? motor.current.q : 0.0f;
             }
             reset_torque_regulators();
@@ -981,12 +1080,26 @@ public:
         // current limit applies both ways, so a reversal finishes through
         // standstill.
         const float motion = motor.shaft_velocity;
+        const float demand = motor.current_sp;
+        bool clipped = false;
         if (motion > stopped_wheel_rate) {
-            motor.current_sp = std::max(motor.current_sp, -brake_current_a);
+            if (demand < -brake_current_a) {
+                motor.current_sp = -brake_current_a;
+                clipped = true;
+            }
         }
         else if (motion < -stopped_wheel_rate) {
-            motor.current_sp = std::min(motor.current_sp, brake_current_a);
+            if (demand > brake_current_a) {
+                motor.current_sp = brake_current_a;
+                clipped = true;
+            }
         }
+        // Episodes, not passes: the clamp stays engaged for as long as the
+        // loop keeps asking for more brake than the regen ceiling allows.
+        if (clipped && !brake_clamp_active) {
+            ++brake_clamp_count;
+        }
+        brake_clamp_active = clipped;
     }
 
     void set_velocity_pid(const PIDConfig& config) override {
@@ -1091,6 +1204,7 @@ protected:
                 motor.controller = MotionControlType::torque;
                 motor.torque_controller = TorqueControlType::foc_current;
                 coast_mode = true;
+                ++coast_entry_count;
                 coast_current_a = motor.current_sp;
                 reset_torque_regulators();
             }

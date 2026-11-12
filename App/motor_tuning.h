@@ -143,6 +143,12 @@ constexpr uint32_t simplefoc_velocity_timeout_ms = 100;
 // view of the loop over the 128-sample ring: ~51 ms of history, enough to hold
 // the few periods before and after a stutter.
 constexpr uint32_t simplefoc_trace_period_us = 400;
+// Control period considered over budget, us (App/loop_trace.h `slow=`). The
+// loop runs at ~1 kHz, so 2 ms is five nominal periods: while such a pass
+// lasts, the bridge holds its last vector and the rotor turns through it —
+// at 0.24 m/s (rotor 88 rad/s) 2 ms is 90 degrees electrical of rotation with
+// no current-loop update, which shows up as a current spike and a stutter.
+constexpr uint32_t simplefoc_loop_overrun_us = 2000;
 
 // d/q current regulators (SimpleFOC PID_current_q / PID_current_d), V per A.
 // Bench-tuned: `A` (characteriseMotor + tuneCurrentController) measured

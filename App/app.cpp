@@ -24,6 +24,7 @@
 #include <voltbro/devices/inverter.hpp>
 
 #include "config_ids.h"
+#include "heap_probe.h"
 #include "motor_backend.h"
 #include "motor_tuning.h"
 #include "serial_line.h"
@@ -265,6 +266,11 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
     constexpr micros_t PID_PERIOD_US = 5000;  // 200 Hz
     static micros_t pid_time = 0;
     while(true) {
+        // The control loop must not touch the free store: a newlib allocation
+        // has no bounded cost, and losing a few milliseconds to it holds the
+        // bridge on a stale voltage vector while the rotor turns through it.
+        // Flagged here, counted by App/heap_probe.cpp (`K` reports it).
+        heap_probe::hot(true);
         micros_t now = micros_64();
 
         EACH_N_MICROS(now, pid_time, PID_PERIOD_US, {
@@ -328,6 +334,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
         }
 
         cyphal_loop();
+        heap_probe::hot(false);
     }
 }
 

@@ -124,6 +124,17 @@ if(VB_MOTOR_IMPL STREQUAL "simplefoc")
     )
 endif()
 
+# App/heap_probe.cpp: account every free-store allocation so the loop can prove
+# it never touches the heap (the wrappers time the call and tag it when app()
+# flagged its loop body). operator new lands here too, because libstdc++'s
+# operator new calls malloc.
+target_link_options(vbcore PRIVATE
+    -Wl,--wrap=malloc
+    -Wl,--wrap=calloc
+    -Wl,--wrap=realloc
+    -Wl,--wrap=free
+)
+
 add_custom_command(
     POST_BUILD
     TARGET vbcore

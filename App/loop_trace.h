@@ -30,31 +30,64 @@ struct Sample {
     float d_voltage_v;       // applied d voltage
     float bus_voltage_v;
     uint8_t hall_raw;        // raw 3-bit Hall state of the last decoder event
-    uint8_t flags;           // Flag bits carried by this sample
+    uint16_t flags;          // Flag bits carried by this sample
 };
 
 // Reasons a sample is marked. A sample carries the events that happened since
-// the previous one, so the dump reads as a timeline of what the loop noticed.
-enum Flag: uint8_t {
+// the previous one, so the dump reads as a timeline of what the loop noticed —
+// and, when the drive stutters, of which mechanism was active at that moment.
+enum Flag: uint16_t {
     HALL_ILLEGAL = 1u << 0,      // a Hall transition no single step can explain
     RATE_IMPLAUSIBLE = 1u << 1,  // a Hall rate sample outside the drive's range
     GUARD_TRIP = 1u << 2,        // the current guard parked the bridge
     SUPPLY_DERATE = 1u << 3,     // the rail left its window and the torque was cut
     DRIVER_FAULT = 1u << 4,      // the gate driver asserted its FAULT line
     TARGET_CLAMPED = 1u << 5,    // the speed target was clamped to the ceiling
+    ANGLE_SNAP = 1u << 6,        // the angle estimate was pulled onto a sector edge
+    ANGLE_WRAP = 1u << 7,        // the angle estimate crossed 0/2pi
+    SLOW_LOOP = 1u << 8,         // a control period ran over its budget
+    CURRENT_LIMIT = 1u << 9,     // the velocity loop demanded more than current_limit
+    VOLTAGE_LIMIT = 1u << 10,    // the current loop ran out of phase voltage
+    BRAKE_CLAMP = 1u << 11,      // the regen ceiling clipped the torque demand
+    COAST = 1u << 12,            // the open-loop channel parked into a coast
+    REGULATOR_RESET = 1u << 13,  // the torque regulators were reset under the drive
+    VELOCITY_TIMEOUT = 1u << 14, // the Hall rate sample timed out and was zeroed
 };
 
 // Events the sample flags are derived from; absolute counts since boot. The
 // owner of each mechanism keeps its own count and mirrors it here before a
 // sample is pushed (the trace never counts anything itself).
+//
+// This is the blame list: every mechanism that can stop the drive or take
+// authority away from a regulator has its own counter, so a stutter can be
+// attributed from `K` (who moved?) and from the dump's flags (which pass?).
 struct Counters {
     volatile uint32_t hall_illegal;
     volatile uint32_t hall_counted;
     volatile uint32_t rate_implausible;
+    volatile uint32_t angle_snaps;
+    volatile uint32_t angle_wraps;
+    volatile uint32_t velocity_timeouts;
     volatile uint32_t guard_trips;
+    volatile uint32_t guard_overcurrent;
+    volatile uint32_t guard_stalled;
     volatile uint32_t derate_entries;
+    volatile uint32_t derate_high;
+    volatile uint32_t derate_low;
     volatile uint32_t driver_faults;
     volatile uint32_t target_clamps;
+    volatile uint32_t current_limits;
+    volatile uint32_t voltage_limits;
+    volatile uint32_t brake_clamps;
+    volatile uint32_t coast_entries;
+    volatile uint32_t regulator_resets;
+    volatile uint32_t slow_loops;
+    volatile uint32_t loop_max_us;
+    // Free-store use (App/heap_probe.h): the control loop must make none.
+    volatile uint32_t heap_allocations;
+    volatile uint32_t heap_hot_allocations;
+    volatile uint32_t heap_max_us;
+    volatile uint32_t heap_hot_max_us;
 };
 
 // Ring depth at the sampling period of the SimpleFOC backend (400 us): 128
@@ -62,9 +95,12 @@ struct Counters {
 constexpr size_t DEPTH = 128;
 
 // Events that arm the automatic dump: each of them is the drive telling the
-// operator that something it cannot explain happened.
-constexpr uint8_t TRIGGER_FLAGS =
-    HALL_ILLEGAL | RATE_IMPLAUSIBLE | GUARD_TRIP | SUPPLY_DERATE | DRIVER_FAULT;
+// operator that something it cannot explain happened. A stalled control period
+// and an angle snap belong there: both are exactly what a stutter looks like
+// from inside the loop.
+constexpr uint16_t TRIGGER_FLAGS =
+    HALL_ILLEGAL | RATE_IMPLAUSIBLE | GUARD_TRIP | SUPPLY_DERATE | DRIVER_FAULT |
+    ANGLE_SNAP | SLOW_LOOP;
 
 Counters& counters();
 

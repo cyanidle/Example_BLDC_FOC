@@ -346,24 +346,78 @@ struct TraceDump {
 };
 TraceDump trace_dump;
 
+// One counter per mechanism that can stop the drive or take authority from a
+// regulator (see loop_trace::Counters). Grouped into three replies because the
+// serial reply buffer is 96 bytes; read `K` before and after an event and the
+// counter that moved names the mechanism. Absolute totals since boot.
 void send_counters() {
     const volatile loop_trace::Counters& counters = loop_trace::counters();
-    Line line;
-    line_text(line, "# K hall_bad=");
-    line_unsigned(line, counters.hall_illegal);
-    line_text(line, " hall_edges=");
-    line_unsigned(line, counters.hall_counted);
-    line_text(line, " rate_bad=");
-    line_unsigned(line, counters.rate_implausible);
-    line_text(line, " guard=");
-    line_unsigned(line, counters.guard_trips);
-    line_text(line, " derate=");
-    line_unsigned(line, counters.derate_entries);
-    line_text(line, " driver=");
-    line_unsigned(line, counters.driver_faults);
-    line_text(line, " clamps=");
-    line_unsigned(line, counters.target_clamps);
-    line_finish(line);
+
+    {
+        Line line;
+        line_text(line, "# K1 hall bad=");
+        line_unsigned(line, counters.hall_illegal);
+        line_text(line, " edges=");
+        line_unsigned(line, counters.hall_counted);
+        line_text(line, " rate_bad=");
+        line_unsigned(line, counters.rate_implausible);
+        line_text(line, " snap=");
+        line_unsigned(line, counters.angle_snaps);
+        line_text(line, " wrap=");
+        line_unsigned(line, counters.angle_wraps);
+        line_text(line, " vel_to=");
+        line_unsigned(line, counters.velocity_timeouts);
+        line_finish(line);
+    }
+
+    {
+        Line line;
+        line_text(line, "# K2 stop guard_oc=");
+        line_unsigned(line, counters.guard_overcurrent);
+        line_text(line, " stall=");
+        line_unsigned(line, counters.guard_stalled);
+        line_text(line, " derate_hi=");
+        line_unsigned(line, counters.derate_high);
+        line_text(line, " derate_lo=");
+        line_unsigned(line, counters.derate_low);
+        line_text(line, " driver=");
+        line_unsigned(line, counters.driver_faults);
+        line_text(line, " coast=");
+        line_unsigned(line, counters.coast_entries);
+        line_finish(line);
+    }
+
+    {
+        Line line;
+        line_text(line, "# K3 limit clamp=");
+        line_unsigned(line, counters.target_clamps);
+        line_text(line, " cur=");
+        line_unsigned(line, counters.current_limits);
+        line_text(line, " volt=");
+        line_unsigned(line, counters.voltage_limits);
+        line_text(line, " brake=");
+        line_unsigned(line, counters.brake_clamps);
+        line_text(line, " reset=");
+        line_unsigned(line, counters.regulator_resets);
+        line_finish(line);
+    }
+
+    {
+        Line line;
+        line_text(line, "# K4 loop slow=");
+        line_unsigned(line, counters.slow_loops);
+        line_text(line, " max_us=");
+        line_unsigned(line, counters.loop_max_us);
+        line_text(line, " heap=");
+        line_unsigned(line, counters.heap_hot_allocations);
+        line_text(line, "/");
+        line_unsigned(line, counters.heap_allocations);
+        line_text(line, " heap_us=");
+        line_unsigned(line, counters.heap_hot_max_us);
+        line_text(line, "/");
+        line_unsigned(line, counters.heap_max_us);
+        line_finish(line);
+    }
 }
 
 void trace_begin_dump() {
@@ -442,7 +496,7 @@ void send_help() {
         "# R<float>  wheel speed set-point ramp, m/s^2 (config id 13, persisted)",
         "# C<id>:<v> set a runtime config value (ids: see config_defs.lua)",
         "# G<id>     read a runtime config value back (16 = full-scale m/s)",
-        "# K         loop-trace event counters (`# K ...`)",
+        "# K         stop/limit counters, one per mechanism (`# K1..K3 ...`)",
         "# W         dump the loop trace now (`# T ...` lines)",
         "# W<0|1>    arm the automatic trace dump (0/1)",
         "# A         calibrate motor R/L, re-tune current loop",

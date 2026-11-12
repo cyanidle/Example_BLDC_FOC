@@ -71,17 +71,28 @@ class MotorBackend;
  *               measured and the current PID gains re-derived from them; the
  *               values arrive as "# simplefoc calibrate: ..." debug lines and
  *               the gains live until reboot. Zero the set-points first.)
- *   K          loop-trace event counters, one line -> "# K hall_bad=<n>
- *              hall_edges=<n> rate_bad=<n> guard=<n> derate=<n> driver=<n>
- *              clamps=<n>"
- *              (Hall transitions no single step explains, counted edges,
- *               rate samples the drive could not have produced, guard trips,
- *               supply-derate entries, gate-driver faults and speed-target
- *               clamps: the counters that say whether a stutter came from the
- *               decoder, the protection or the voltage ceiling. The angle
- *               estimate has no counter — the trace samples carry the error
- *               directly, because a per-call threshold cannot separate the
- *               ordinary post-edge catch-up from a real disagreement.)
+ *   K          stop/limit counters, four lines -> "# K1 hall bad=<n> edges=<n>
+ *              rate_bad=<n> snap=<n> wrap=<n> vel_to=<n>"
+ *              "# K2 stop guard_oc=<n> stall=<n> derate_hi=<n>
+ *              derate_lo=<n> driver=<n> coast=<n>"
+ *              "# K3 limit clamp=<n> cur=<n> volt=<n> brake=<n> reset=<n>"
+ *              "# K4 loop slow=<n> max_us=<n> heap=<hot>/<all>
+ *              heap_us=<hot_max>/<all_max>"
+ *              (One counter per mechanism that can stop the drive or take
+ *               authority from a regulator, absolute totals since boot: read it
+ *               before and after an event and the counter that moved names the
+ *               mechanism. Hall: transitions no single step explains, counted
+ *               edges, rate samples the drive could not have produced, angle
+ *               snaps onto a sector edge, 0/2pi wraps of the angle estimate,
+ *               rate timeouts. Stop: current-guard trips split by overcurrent
+ *               and stall, supply-derate entries split by rail high (regen) and
+ *               low (droop), gate-driver faults, coasts entered. Limit: target
+ *               clamped to the ceiling, velocity loop at the current limit,
+ *               current loop at its voltage limit, regen brake clamp, torque
+ *               regulator resets. Loop: control periods over budget and the
+ *               worst one since boot, plus free-store allocations made while
+ *               the loop was running and the worst allocator call — the loop is
+ *               required to make none, see App/heap_probe.h.)
  *   W          dump the loop trace now       -> "# trace: samples=<n> depth=128"
  *              then one "# T <ms> e=<deg> a=<deg> v=<rad/s> iq=<A> id=<A>
  *              im=<A> uq=<V> ud=<V> b=<V> h=<0..7> ev=<bits>" line per sample

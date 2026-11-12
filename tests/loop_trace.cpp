@@ -12,7 +12,7 @@
 
 namespace {
 
-loop_trace::Sample sample_at(uint32_t time_us, uint8_t flags = 0) {
+loop_trace::Sample sample_at(uint32_t time_us, uint16_t flags = 0) {
     loop_trace::Sample sample = {};
     sample.time_us = time_us;
     sample.flags = flags;
@@ -57,8 +57,8 @@ void test_trigger_is_one_shot_and_needs_arming() {
     CHECK(!loop_trace::take_trigger());
 
     // Every triggering flag counts as an event.
-    for (uint8_t bit = 0; bit < 7; ++bit) {
-        const uint8_t flag = (uint8_t)(1u << bit);
+    for (uint16_t bit = 0; bit < 15; ++bit) {
+        const uint16_t flag = (uint16_t)(1u << bit);
         loop_trace::arm(true);
         loop_trace::push(sample_at(3, flag));
         const bool expected = (loop_trace::TRIGGER_FLAGS & flag) != 0;
@@ -93,6 +93,39 @@ void test_counters_start_clear() {
     CHECK(counters.hall_illegal == 0);
     CHECK(counters.guard_trips == 0);
     CHECK(counters.driver_faults == 0);
+    // The blame counters: one per mechanism that can stop the drive.
+    CHECK(counters.guard_overcurrent == 0);
+    CHECK(counters.guard_stalled == 0);
+    CHECK(counters.derate_high == 0);
+    CHECK(counters.derate_low == 0);
+    CHECK(counters.angle_snaps == 0);
+    CHECK(counters.angle_wraps == 0);
+    CHECK(counters.velocity_timeouts == 0);
+    CHECK(counters.current_limits == 0);
+    CHECK(counters.voltage_limits == 0);
+    CHECK(counters.brake_clamps == 0);
+    CHECK(counters.coast_entries == 0);
+    CHECK(counters.regulator_resets == 0);
+    CHECK(counters.slow_loops == 0);
+    CHECK(counters.loop_max_us == 0);
+    CHECK(counters.heap_allocations == 0);
+    CHECK(counters.heap_hot_allocations == 0);
+    CHECK(counters.heap_max_us == 0);
+    CHECK(counters.heap_hot_max_us == 0);
+}
+
+void test_every_event_fits_its_flag_and_trigger_set() {
+    // A sample carries 16 bits of flags; every defined flag has to sit inside
+    // them and the trigger set has to be a subset of the defined flags.
+    const uint16_t all = loop_trace::HALL_ILLEGAL | loop_trace::RATE_IMPLAUSIBLE |
+        loop_trace::GUARD_TRIP | loop_trace::SUPPLY_DERATE | loop_trace::DRIVER_FAULT |
+        loop_trace::TARGET_CLAMPED | loop_trace::ANGLE_SNAP | loop_trace::ANGLE_WRAP |
+        loop_trace::SLOW_LOOP | loop_trace::CURRENT_LIMIT | loop_trace::VOLTAGE_LIMIT |
+        loop_trace::BRAKE_CLAMP | loop_trace::COAST | loop_trace::REGULATOR_RESET |
+        loop_trace::VELOCITY_TIMEOUT;
+    CHECK((loop_trace::TRIGGER_FLAGS & ~all) == 0);
+    loop_trace::Sample sample = sample_at(0, all);
+    CHECK(sample.flags == all);
 }
 
 }
@@ -102,6 +135,7 @@ int main() {
     test_trigger_is_one_shot_and_needs_arming();
     test_locked_ring_drops_samples();
     test_counters_start_clear();
+    test_every_event_fits_its_flag_and_trigger_set();
     std::cout << "loop_trace: ok\n";
     return 0;
 }

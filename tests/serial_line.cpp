@@ -513,7 +513,7 @@ void test_lpf_ramp_alias_config(FakeMotor& motor) {
 void test_trace_counters_and_dump(FakeMotor& motor) {
     loop_trace::reset();
     send(motor, "K\n");
-    CHECK(take_tx().rfind("# K hall_bad=0 hall_edges=0", 0) == 0);
+    CHECK(take_tx().rfind("# K1 hall bad=0 edges=0", 0) == 0);
 
     // Arming: the next sample carrying a suspicious event starts the dump.
     send(motor, "W1\n");
