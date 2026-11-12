@@ -84,6 +84,13 @@ struct Counters {
     volatile uint32_t regulator_resets;
     volatile uint32_t slow_loops;
     volatile uint32_t loop_max_us;
+    // Worst duration of each phase of the app loop, us (written by app()): a
+    // stall is only useful to know about if it can be attributed to a phase.
+    volatile uint32_t phase_pid_max_us;
+    volatile uint32_t phase_update_max_us;
+    volatile uint32_t phase_poll_max_us;
+    volatile uint32_t phase_persist_max_us;
+    volatile uint32_t phase_cyphal_max_us;
     // Free-store use (App/heap_probe.h): the control loop must make none.
     volatile uint32_t heap_allocations;
     volatile uint32_t heap_hot_allocations;

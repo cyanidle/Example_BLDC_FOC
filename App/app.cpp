@@ -25,6 +25,7 @@
 
 #include "config_ids.h"
 #include "heap_probe.h"
+#include "loop_trace.h"
 #include "motor_backend.h"
 #include "motor_tuning.h"
 #include "serial_line.h"
@@ -216,6 +217,41 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
     }
 }
 
+// Worst-case duration of each phase of the loop below, us (reported as `K5`).
+// The drive's stutter is a periodic ~3 ms stall — measured at about one every
+// 4..5 s — and knowing which phase absorbed it is the difference between a
+// guess and a fix. Kept as a running maximum since boot: a stall is rare, so an
+// average would hide it.
+namespace {
+
+enum LoopPhase: uint8_t { phase_pid, phase_update, phase_poll, phase_persist, phase_cyphal };
+
+void loop_phase_timing(LoopPhase phase, micros_t& mark) {
+    const micros_t now = micros_64();
+    const int64_t elapsed = subtract_64(now, mark);
+    mark = now;
+    // The clock is microsecond-monotonic now (see micros_64), but a phase that
+    // reads back as negative would pin the maximum forever: drop it instead.
+    if (elapsed < 0) {
+        return;
+    }
+    const uint32_t elapsed_us = (uint32_t)elapsed;
+    volatile loop_trace::Counters& counters = loop_trace::counters();
+    volatile uint32_t* slot = nullptr;
+    switch (phase) {
+        case phase_pid: slot = &counters.phase_pid_max_us; break;
+        case phase_update: slot = &counters.phase_update_max_us; break;
+        case phase_poll: slot = &counters.phase_poll_max_us; break;
+        case phase_persist: slot = &counters.phase_persist_max_us; break;
+        case phase_cyphal: slot = &counters.phase_cyphal_max_us; break;
+    }
+    if (slot != nullptr && elapsed_us > *slot) {
+        *slot = elapsed_us;
+    }
+}
+
+}
+
 [[noreturn]] void app() {
     start_timers();
     start_cyphal();
@@ -282,19 +318,24 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
         // Flagged here, counted by App/heap_probe.cpp (`K` reports it).
         heap_probe::hot(true);
         micros_t now = micros_64();
+        micros_t phase_mark = now;
 
         EACH_N_MICROS(now, pid_time, PID_PERIOD_US, {
             const float dt = (float)PID_PERIOD_US * 1e-6f;
             motor->apply_speed_ramp(dt);
             motor->run_speed_loop(dt);
         })
+        loop_phase_timing(phase_pid, phase_mark);
 
         motor->update();
+        loop_phase_timing(phase_update, phase_mark);
 
         serial_line_poll(*motor);
+        loop_phase_timing(phase_poll, phase_mark);
 
         const millis_t now_ms = millis_32();
         service_config_persistence(now_ms);
+        loop_phase_timing(phase_persist, phase_mark);
 
         static millis_t fault_check_time = 0;
         if ((now_ms - fault_check_time) >= 50) {
@@ -344,6 +385,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
         }
 
         cyphal_loop();
+        loop_phase_timing(phase_cyphal, phase_mark);
         heap_probe::hot(false);
     }
 }

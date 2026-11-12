@@ -420,6 +420,21 @@ void send_counters() {
         line_unsigned(line, counters.heap_max_us);
         line_finish(line);
     }
+
+    {
+        Line line;
+        line_text(line, "# K5 ph pid=");
+        line_unsigned(line, counters.phase_pid_max_us);
+        line_text(line, " update=");
+        line_unsigned(line, counters.phase_update_max_us);
+        line_text(line, " poll=");
+        line_unsigned(line, counters.phase_poll_max_us);
+        line_text(line, " persist=");
+        line_unsigned(line, counters.phase_persist_max_us);
+        line_text(line, " cyphal=");
+        line_unsigned(line, counters.phase_cyphal_max_us);
+        line_finish(line);
+    }
 }
 
 void trace_begin_dump() {
