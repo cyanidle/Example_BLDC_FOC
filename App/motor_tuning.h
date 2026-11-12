@@ -46,7 +46,7 @@ inline PIDConfig default_velocity_pid_config() {
         .ki = 0.1f,               // V / (rad/s * s)
         .kd = 0.0f,
         // Error-domain clamp: the volts the integral may add are ki * this, so
-        // 100 * 0.1 = 10 V — the same value config_defs.lua shows as i_limit.
+        // 100 * 0.1 = 10 V.
         .integral_error_lim = 100.0f,
         .max_output = 24.0f,      // V
         .min_output = -24.0f
@@ -99,7 +99,7 @@ constexpr float simplefoc_hall_rate_plausible_multiple = 2.0f;
 // sector ahead of the previous one — that snap is structural, not saturation.
 constexpr float simplefoc_hall_angle_tau_s = 0.0008f;
 constexpr float simplefoc_pwm_frequency_hz = 25000.0f;
-// 60 V stays below the DRV8323's 65 V absolute-maximum PVDD rating. The 30 V
+// 60 V stays below the gate driver's 65 V absolute-maximum PVDD rating. The 30 V
 // phase cap leaves room for 1 m/s on this wheel (25.6 V at the measured EMF
 // constant); below those ceilings the live bus remains the binding limit.
 constexpr float simplefoc_driver_voltage_limit_v = 60.0f;

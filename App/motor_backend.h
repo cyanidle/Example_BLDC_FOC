@@ -319,11 +319,13 @@ private:
     // The compiled default mirrors BOOT_MAX_WHEEL_SPEED_M_S in app.cpp; a module
     // replaces it with the speed its own rail can regulate right after init, and
     // the config topic/EEPROM can lower it further.
-    float max_speed_m_s = 0.25f;
+    float max_speed_m_s = 0.5f;
     bool target_clamped = false;
-    // 2 m/s² reaches the cart's top speed in about a second: the six-step
-    // watchdog needs the shaft to move within NO_PROGRESS_MS of a command, and a
-    // friction-bound wheel does not move at all from a 1 V step.
+    // The slope is a compromise: the six-step watchdog needs Hall progress
+    // within NO_PROGRESS_MS (500 ms) of a command and a friction-bound wheel
+    // does not move at all from a 1 V step, while a steeper ramp lurches the
+    // cart. 0.75 m/s² still asks for 0.375 m/s of set-point at that deadline,
+    // which saturates the demand on a stalled wheel.
     float speed_ramp_m_s2 = 0.75f;
 };
 

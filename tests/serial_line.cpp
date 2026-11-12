@@ -146,11 +146,11 @@ void send_slow(FakeMotor& motor, const std::string& text, size_t chunk) {
 
 void test_setpoints(FakeMotor& motor) {
     // T is normalized: 0.5 is half of the module's full-scale wheel speed
-    // (0.25 m/s by default, config id 16).
+    // (0.5 m/s by default, config id 16).
     send(motor, "T0.5\r\n");
     CHECK(take_tx() == "T=0.500\r\n");
     settle(motor);
-    CHECK(motor.target == wheel_rad_s(0.125f));
+    CHECK(motor.target == wheel_rad_s(0.25f));
 
     send(motor, "Q2.25\n");
     CHECK(take_tx() == "Q=2.250\r\n");
@@ -159,14 +159,14 @@ void test_setpoints(FakeMotor& motor) {
     send(motor, "T-1\n");
     CHECK(take_tx() == "T=-1.000\r\n");
     settle(motor);
-    CHECK(motor.target == wheel_rad_s(-0.25f));
+    CHECK(motor.target == wheel_rad_s(-0.5f));
 
     // Out of range is clamped to full scale, not rejected: a slider at its end
     // must stop, not answer ERR in the middle of a drag.
     send(motor, "T12.3456\n");
     CHECK(take_tx() == "T=1.000\r\n");
     settle(motor);
-    CHECK(motor.target == wheel_rad_s(0.25f));
+    CHECK(motor.target == wheel_rad_s(0.5f));
     send(motor, "T-12.3456\n");
     CHECK(take_tx() == "T=-1.000\r\n");
 
@@ -188,10 +188,10 @@ void test_speed_target_uses_wheel_radius(FakeMotor& motor) {
     // previous conversion (the radius is read at the ramp, not at the command).
     motor.set_speed_target(0.0f);
     motor.set_wheel_radius(0.1f);
-    send(motor, "T1\n");  // full scale of the default 0.25 m/s
+    send(motor, "T1\n");  // full scale of the default 0.5 m/s
     CHECK(take_tx() == "T=1.000\r\n");
     settle(motor);
-    CHECK(std::abs(motor.target - 2.5f) < 1e-4f);
+    CHECK(std::abs(motor.target - 5.0f) < 1e-4f);
 
     motor.velocity = 10.0f;
     CHECK(std::abs(motor.get_linear_velocity() - 1.0f) < 1e-4f);
@@ -202,7 +202,7 @@ void test_speed_target_uses_wheel_radius(FakeMotor& motor) {
     send(motor, "T0.5\n");
     CHECK(take_tx() == "T=0.500\r\n");
     settle(motor);
-    CHECK(motor.target == wheel_rad_s(0.125f));
+    CHECK(motor.target == wheel_rad_s(0.25f));
 }
 
 void test_enable(FakeMotor& motor) {
@@ -395,7 +395,7 @@ void test_rx_overflow(FakeMotor& motor) {
     send(motor, "T0.8\n");
     CHECK(take_tx() == "T=0.800\r\n");
     settle(motor);
-    CHECK(motor.target == wheel_rad_s(0.2f));
+    CHECK(motor.target == wheel_rad_s(0.4f));
 
     send(motor, "X\n");
     take_tx();
