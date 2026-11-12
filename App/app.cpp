@@ -103,8 +103,9 @@ constexpr float BOOT_WHEEL_RADIUS_M = 0.16f;
 
 // Boot-time full-scale speed of a normalized (-1..1) command, m/s, until the
 // backend reports what its rail can regulate and the EEPROM record overrides
-// it. Mirrors mods/config_defs.lua's max_speed default.
-constexpr float BOOT_MAX_WHEEL_SPEED_M_S = 0.5f;
+// it. One definition, shared with the façade (motor_tuning.h) and mirroring
+// mods/config_defs.lua's max_speed default.
+constexpr float BOOT_MAX_WHEEL_SPEED_M_S = motor_tuning::default_max_speed_m_s;
 
 // Default velocity-PID gains (see motor_tuning.h for the per-implementation
 // values). Overridden at run time by the config topic.

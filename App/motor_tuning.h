@@ -13,6 +13,12 @@
  */
 namespace motor_tuning {
 
+// Full-scale wheel speed a normalized -1..1 command maps onto (config id 16)
+// until the backend reports what its rail can regulate and the EEPROM record
+// overrides it. Mirrors mods/config_defs.lua's max_speed default; the façade
+// and app.cpp both start from this one value.
+constexpr float default_max_speed_m_s = 0.5f;
+
 // The PID output unit follows the backend: the six-step loop produces a
 // voltage set-point (V), the SimpleFOC and libvoltbro FOC loops a q-current (A).
 inline PIDConfig default_velocity_pid_config() {

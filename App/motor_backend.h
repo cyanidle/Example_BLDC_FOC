@@ -316,10 +316,10 @@ private:
     // clamped to it. Infinite until a backend says otherwise.
     float speed_ceiling_m_s = std::numeric_limits<float>::infinity();
     // Full-scale speed a normalized -1..1 command maps onto, m/s (config id 16).
-    // The compiled default mirrors BOOT_MAX_WHEEL_SPEED_M_S in app.cpp; a module
-    // replaces it with the speed its own rail can regulate right after init, and
-    // the config topic/EEPROM can lower it further.
-    float max_speed_m_s = 0.5f;
+    // Starts from motor_tuning::default_max_speed_m_s, the same value app.cpp
+    // boots with; a module replaces it with the speed its own rail can regulate
+    // right after init, and the config topic/EEPROM can lower it further.
+    float max_speed_m_s = motor_tuning::default_max_speed_m_s;
     bool target_clamped = false;
     // The slope is a compromise: the six-step watchdog needs Hall progress
     // within NO_PROGRESS_MS (500 ms) of a command and a friction-bound wheel
