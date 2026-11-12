@@ -38,6 +38,16 @@ target_include_directories(motor_limits PRIVATE
 target_compile_options(motor_limits PRIVATE -Wall -Wextra -Wno-reorder)
 add_test(NAME motor_limits COMMAND motor_limits)
 
+add_executable(cycle_counter
+    cycle_counter.cpp
+)
+target_compile_features(cycle_counter PRIVATE cxx_std_20)
+target_include_directories(cycle_counter PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/../App
+)
+target_compile_options(cycle_counter PRIVATE -Wall -Wextra -Wno-reorder)
+add_test(NAME cycle_counter COMMAND cycle_counter)
+
 add_executable(loop_trace
     loop_trace.cpp
     ${CMAKE_CURRENT_LIST_DIR}/../App/loop_trace.cpp
@@ -66,7 +76,8 @@ add_executable(serial_line
 )
 target_compile_features(serial_line PRIVATE cxx_std_20)
 target_compile_definitions(serial_line PRIVATE
-    STM32_G HAL_TIM_MODULE_ENABLED HAL_ADC_MODULE_ENABLED HAL_UART_MODULE_ENABLED)
+    STM32_G HAL_TIM_MODULE_ENABLED HAL_ADC_MODULE_ENABLED HAL_UART_MODULE_ENABLED
+    VB_FIRMWARE_COMMIT=\"host-test\")
 target_include_directories(serial_line PRIVATE
     hal
     ${CMAKE_CURRENT_LIST_DIR}/../App

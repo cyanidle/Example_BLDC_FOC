@@ -2,48 +2,50 @@
 
 #include "tim.h"
 
-static uint32_t millis_k __attribute__ ((__aligned__(4))) = 0;
+#include "cycle_counter.h"
+
+static cycle_counter::Extension dwt_cycles;
+static bool timebase_started = false;
+
+static void start_timebase() {
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->CYCCNT = 0;
+    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+    dwt_cycles = {};
+    timebase_started = true;
+}
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
     if (htim->Instance == TIM2) {
         HAL_GPIO_TogglePin(LED2_GPIO_Port, LED2_Pin);
-    }
-    else if (htim->Instance == TIM7) {
-        millis_k += 1;
     }
     else if (htim->Instance == TIM1) {
         // TODO
     }
 }
 
-// TIM7 runs at 1 MHz with period 999: counter is microseconds within the
-// current millisecond, millis_k counts whole milliseconds. Compute in 64 bits:
-// the old `millis_k * 1000u + counter` wrapped in 32-bit arithmetic after
-// ~71.6 minutes, freezing every micros_64()-based scheduler (e.g. the PID).
+// DWT->CYCCNT is independent of interrupt latency. Extend its 32-bit wrap in
+// the same critical section as the read so every caller sees monotonic time.
 micros_t micros_64() {
-    uint32_t ms, us;
+    uint64_t cycles;
     CRITICAL_SECTION(
-        ms = millis_k;
-        us = __HAL_TIM_GetCounter(&htim7);
+        if (!timebase_started) {
+            start_timebase();
+        }
+        cycles = cycle_counter::extend(dwt_cycles, DWT->CYCCNT);
     )
-    return (micros_t)ms * 1000u + us;
+    return cycles / (SystemCoreClock / 1000000U);
 }
-// KNOWN DEFECT of the software millisecond counter: millis_k is incremented by
-// the TIM7 update interrupt, which runs some time after the counter wraps, so a
-// read that straddles the wrap while that interrupt is delayed returns a time up
-// to ~1 ms in the PAST — the clock steps backwards. Measured while timing the
-// loop phases: -996 us between two reads taken microseconds apart. Every dt in
-// the drive comes from here, so the symptom is a pass with dt = 0 (a skipped
-// ramp/slew step) roughly once per millisecond boundary that a long critical
-// section happens to straddle. The fix is a hardware timebase — DWT->CYCCNT at
-// the core clock (wraps every 25 s at 170 MHz, extended in software) has no such
-// window at all. Do not paper over it per caller.
 
 millis_t millis_32() {
-    return millis_k;
+    return (millis_t)(micros_64() / 1000U);
 }
 
 void start_timers() {
     HAL_TIM_Base_Start_IT(&htim2);
-    HAL_TIM_Base_Start_IT(&htim7);
+    CRITICAL_SECTION(
+        if (!timebase_started) {
+            start_timebase();
+        }
+    )
 }
