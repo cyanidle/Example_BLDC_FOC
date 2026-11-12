@@ -60,7 +60,17 @@ Inverter inverter(&hadc1);
 DriveRuntimeConfig drive_runtime_config{};
 
 DriveInfo drive_info {
-    .torque_const = 0.069f,  // Nm / A == V / (rad/s)
+    // Nm / A == V / (rad/s), and the firmware uses it as the back-EMF constant:
+    // every voltage and speed budget derives from it (App/motor_limits.h).
+    // MEASURED, not nameplate: hold steady speeds and fit the applied q-voltage
+    // against the hall-derived shaft rate (the halls count the rotor, so no
+    // gearbox or nameplate enters the measurement). On this module
+    // 2026-11-12: |u| = 4.40 V at 89.0 rotor rad/s forward, 4.37 V at 88.9
+    // reverse -> 0.0478 V/(rotor rad/s) both ways, i.e. 3.06 V per WHEEL rad/s.
+    // The nameplate 0.069 was 44 % high, and because the speed ceiling is
+    // (modulation limit - floor) / EMF it capped the drive at 0.2435 m/s where
+    // the same 18.5 V rail and headroom reach 0.35.
+    .torque_const = 0.0478f,
     .max_current = 8,
     .max_torque = 1,
     .stall_current = 13,

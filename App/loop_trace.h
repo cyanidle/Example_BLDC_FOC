@@ -65,8 +65,9 @@ struct Counters {
     volatile uint32_t hall_illegal;
     volatile uint32_t hall_counted;
     volatile uint32_t rate_implausible;
-    volatile uint32_t angle_snaps;
+    volatile uint32_t angle_snaps;   // sector-boundary pulls (one per Hall edge)
     volatile uint32_t angle_wraps;
+    volatile uint32_t angle_calls;
     volatile uint32_t velocity_timeouts;
     volatile uint32_t guard_trips;
     volatile uint32_t guard_overcurrent;

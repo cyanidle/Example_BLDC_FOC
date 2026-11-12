@@ -114,13 +114,24 @@ private:
     float last_error_rad = 0.0f;
     uint32_t implausible_rate_count = 0;
     // Blame counters for the stutter hunt (see loop_trace.h): how often the
-    // estimate had to be pulled onto a sector edge (a phase discontinuity of up
-    // to half a sector), how often it free-ran across 0/2pi (one rotor
-    // revolution, the absolute-angle wrap), and how often the rate sample
-    // timed out (no Hall edge for simplefoc_velocity_timeout_ms).
+    // estimate was pulled onto a sector boundary, how often the applied angle
+    // crossed 0/2pi (once per rotor revolution — the absolute-angle wrap), and
+    // how often the rate sample timed out (no Hall edge for
+    // simplefoc_velocity_timeout_ms). The sector pulls track the edge count
+    // almost exactly (measured: 14306 on 14300 edges): a new sector centre is
+    // half a sector ahead of the previous one, so that pull is structural and
+    // the counter reads as "the sector advanced", not as a fault.
     uint32_t sector_snap_count = 0;
     uint32_t wrap_count = 0;
     uint32_t velocity_timeout_count = 0;
+    // Calls and the last value handed out: the wrap above can only be counted
+    // on the applied angle. The free-run alone never crosses 0/2pi on this
+    // drive — the sector snaps the estimate across the boundary first — so a
+    // counter that watches the free-run reports zero through whole revolutions
+    // (measured: 0 wraps over 17 revolutions). What matters is a discontinuity
+    // of the value SimpleFOC actually applies, and that is what this counts.
+    uint32_t angle_call_count = 0;
+    float last_angle_out = 0.0f;
 
     static float wrap_2pi(float angle) {
         if (angle < 0.0f) return angle + _2PI;
@@ -141,6 +152,7 @@ public:
     uint32_t get_implausible_rate_count() const { return implausible_rate_count; }
     uint32_t get_sector_snap_count() const { return sector_snap_count; }
     uint32_t get_wrap_count() const { return wrap_count; }
+    uint32_t get_angle_call_count() const { return angle_call_count; }
     uint32_t get_velocity_timeout_count() const { return velocity_timeout_count; }
 
     // Ceiling a single rate sample may report, motor rad/s (see
@@ -177,11 +189,10 @@ public:
         if (!(dt > 0.0f)) {
             return tracked_angle;
         }
+        ++angle_call_count;
+        const float previous_angle = last_angle_out;
         const float free_run = tracked_angle + prediction_rate_rad_s * dt;
         tracked_angle = wrap_2pi(free_run);
-        if (free_run < 0.0f || free_run >= _2PI) {
-            ++wrap_count;
-        }
         float error = centre - tracked_angle;
         if (error > _PI) error -= _2PI;
         else if (error < -_PI) error += _2PI;
@@ -210,6 +221,12 @@ public:
         sector_centre = centre;
         const float gain = dt / (dt + tuning::simplefoc_hall_angle_tau_s);
         tracked_angle = wrap_2pi(tracked_angle + gain * error);
+        // A jump of half a turn between two calls can only be the 0/2pi
+        // boundary: that is the absolute-angle wrap this is meant to expose.
+        if (std::abs(tracked_angle - previous_angle) > _PI) {
+            ++wrap_count;
+        }
+        last_angle_out = tracked_angle;
         return tracked_angle;
     }
 
@@ -365,6 +382,11 @@ private:
     // ROTOR rad/s, the gearbox scales it to the wheel side. Every voltage and
     // speed budget below is this number against the modulation ceiling.
     float emf_per_wheel_rad_s = 0.0f;
+    // Bus voltage low-passed for the voltage/speed budgets, V (see the filter
+    // in update()); the derate thresholds read the raw sample.
+    float bus_filtered_v = 0.0f;
+    // How long the raw bus sample has been outside the derate window, s.
+    float rail_excursion_s = 0.0f;
     // Loop trace (App/loop_trace.h): counters this backend owns, plus the
     // snapshot the sample flags are diffed against. One counter per mechanism
     // that can stop the drive or take authority from a regulator, so a stutter
@@ -413,6 +435,7 @@ private:
         counters.rate_implausible = sensor.get_implausible_rate_count();
         counters.angle_snaps = sensor.get_sector_snap_count();
         counters.angle_wraps = sensor.get_wrap_count();
+        counters.angle_calls = sensor.get_angle_call_count();
         counters.velocity_timeouts = sensor.get_velocity_timeout_count();
         counters.guard_overcurrent = guard_overcurrent_count;
         counters.guard_stalled = guard_stalled_count;
@@ -742,8 +765,23 @@ public:
         inverter.update();
         const float bus_voltage = inverter.get_busV();
         if (std::isfinite(bus_voltage) && bus_voltage > 0.0f) {
-            driver.voltage_power_supply = bus_voltage;
-            driver.voltage_limit = std::min(bus_voltage, tuning::simplefoc_driver_voltage_limit_v);
+            // The bus reading is one free-running ADC frame, not synchronous
+            // with the PWM, so a single frame can read well under the rail.
+            // The voltage and speed budgets must not follow that noise: a
+            // momentary low sample used to yank the derived speed ceiling down
+            // for a pass, which showed up on the bench as the applied target
+            // wandering (0.190..0.197 m/s under a held command) instead of
+            // sitting still. The derate thresholds below keep the raw sample —
+            // they have to see a real excursion immediately.
+            if (!(bus_filtered_v > 0.0f)) {
+                bus_filtered_v = bus_voltage;
+            }
+            else {
+                const float alpha = dt_s / (dt_s + tuning::simplefoc_bus_filter_tau_s);
+                bus_filtered_v += alpha * (bus_voltage - bus_filtered_v);
+            }
+            driver.voltage_power_supply = bus_filtered_v;
+            driver.voltage_limit = std::min(bus_filtered_v, tuning::simplefoc_driver_voltage_limit_v);
             motor.voltage_limit = modulation_limit(driver.voltage_limit);
             voltage_ceiling_v = std::min(voltage_ceiling_v, motor.voltage_limit);
             // The current loops output phase volts, and the velocity loop
@@ -782,7 +820,23 @@ public:
             // out of current limit on acceleration.
             const bool rail_high = bus_voltage > tuning::simplefoc_supply_derate_over_v;
             const bool rail_low = bus_voltage < tuning::simplefoc_supply_derate_low_v;
+            // The bus value is one ADC frame and aliases the switching ripple,
+            // so a single frame reads up to ~1.5 V off the rail while the rail
+            // itself is steady. Entering the derate on one frame turns that
+            // noise into torque holes: measured 25 high + 26 low entries during
+            // a 30 s steady hold at 18.5 V, each one zeroing the demand and then
+            // rebuilding it at the recovery rate (0.25 s). Require the excursion
+            // to persist — still two control periods, far faster than any real
+            // rail event that matters to the current loops.
             if (rail_high || rail_low) {
+                rail_excursion_s += dt_s;
+            }
+            else {
+                rail_excursion_s = 0.0f;
+            }
+            const bool derate = (rail_high || rail_low) &&
+                rail_excursion_s >= tuning::simplefoc_supply_derate_confirm_s;
+            if (derate) {
                 // Immediate: the rail crosses these thresholds in tens of
                 // milliseconds, so there is no time to ramp the demand down.
                 supply_derate = 0.0f;

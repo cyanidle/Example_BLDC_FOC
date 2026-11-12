@@ -93,9 +93,12 @@ constexpr float simplefoc_hall_rate_tau_s = 0.02f;
 constexpr float simplefoc_hall_rate_plausible_multiple = 2.0f;
 // Time constant of the Hall angle tracker, s: how fast the estimated angle is
 // pulled towards the centre of the sector the count reports. It has to be
-// shorter than the time the rotor spends in a sector (2.2 ms at 0.3 m/s) or
+// shorter than the time the rotor spends in a sector (1.9 ms at 0.28 m/s) or
 // the residual staircase is exactly the torque ripple the tracker exists to
-// remove.
+// remove. Scaling it with the sector period was tried on the bench and changed
+// nothing measurable: the half-sector clamp fires once per Hall edge either way
+// (14606/14600 and 14306/14300), because a new sector centre is exactly half a
+// sector ahead of the previous one — that snap is structural, not saturation.
 constexpr float simplefoc_hall_angle_tau_s = 0.0008f;
 constexpr float simplefoc_pwm_frequency_hz = 25000.0f;
 constexpr float simplefoc_driver_voltage_limit_v = 19.0f;
@@ -134,6 +137,12 @@ constexpr float simplefoc_supply_derate_low_v = 17.0f;
 constexpr float simplefoc_supply_derate_full_v = 18.0f;
 constexpr float simplefoc_supply_derate_over_v = 19.2f;
 constexpr float simplefoc_supply_derate_rate_per_s = 4.0f;
+// How long the raw bus sample must stay outside its window before the derate is
+// allowed to act, s. The sample is one free-running ADC frame on a signal that
+// aliases the switching ripple (measured: single frames 1.5 V off a steady
+// 18.5 V rail), and a derate entry zeroes the whole torque demand, so acting on
+// one frame is acting on noise — 51 entries in a 30 s steady hold.
+constexpr float simplefoc_supply_derate_confirm_s = 0.0015f;
 // Quiet time the gate-driver FAULT line must stay released before the loop
 // re-arms itself after a transient trip.
 constexpr float simplefoc_driver_fault_quiet_s = 0.1f;
@@ -149,6 +158,12 @@ constexpr uint32_t simplefoc_trace_period_us = 400;
 // at 0.24 m/s (rotor 88 rad/s) 2 ms is 90 degrees electrical of rotation with
 // no current-loop update, which shows up as a current spike and a stutter.
 constexpr uint32_t simplefoc_loop_overrun_us = 2000;
+// Time constant of the bus-voltage filter the voltage and speed budgets are
+// derived from, s. The inverter's bus value is one free-running ADC frame, so
+// it aliases the switching ripple and can read several volts low on a single
+// pass; the budgets must follow the rail, not the frame (a per-pass ceiling
+// turned a held command into a wandering target on the bench).
+constexpr float simplefoc_bus_filter_tau_s = 0.05f;
 
 // d/q current regulators (SimpleFOC PID_current_q / PID_current_d), V per A.
 // Bench-tuned: `A` (characteriseMotor + tuneCurrentController) measured

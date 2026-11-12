@@ -359,14 +359,14 @@ void send_counters() {
         line_unsigned(line, counters.hall_illegal);
         line_text(line, " edges=");
         line_unsigned(line, counters.hall_counted);
+        line_text(line, " calls=");
+        line_unsigned(line, counters.angle_calls);
         line_text(line, " rate_bad=");
         line_unsigned(line, counters.rate_implausible);
         line_text(line, " snap=");
         line_unsigned(line, counters.angle_snaps);
         line_text(line, " wrap=");
         line_unsigned(line, counters.angle_wraps);
-        line_text(line, " vel_to=");
-        line_unsigned(line, counters.velocity_timeouts);
         line_finish(line);
     }
 
@@ -408,6 +408,8 @@ void send_counters() {
         line_unsigned(line, counters.slow_loops);
         line_text(line, " max_us=");
         line_unsigned(line, counters.loop_max_us);
+        line_text(line, " vel_to=");
+        line_unsigned(line, counters.velocity_timeouts);
         line_text(line, " heap=");
         line_unsigned(line, counters.heap_hot_allocations);
         line_text(line, "/");

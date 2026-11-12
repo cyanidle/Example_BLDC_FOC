@@ -11,11 +11,11 @@
     } \
 } while (false)
 
-// The drive these numbers come from: 57BL95S15-230 with the 64:1 gearbox,
-// torque_const 0.069 V per rotor rad/s, an 18.5 V rail. Its modulation ceiling
-// is min(bus, 19) * 0.5 * 0.9 = 8.325 V and the EMF per wheel rad/s is 0.069 *
-// 64 = 4.416 V.
-static constexpr float EMF_PER_WHEEL_RAD_S = 0.069f * 64.0f;
+// The drive these numbers come from: 57BL95S15-230 with the 64:1 gearbox, a
+// MEASURED 0.0478 V per rotor rad/s (see DriveInfo in App/app.cpp), an 18.5 V
+// rail. Its modulation ceiling is min(bus, 19) * 0.5 * 0.9 = 8.325 V and the
+// EMF per wheel rad/s is 0.0478 * 64 = 3.06 V.
+static constexpr float EMF_PER_WHEEL_RAD_S = 0.0478f * 64.0f;
 static constexpr float CEILING_V = 18.5f * 0.5f * 0.9f;
 static constexpr float FLOOR_V = 1.6f;
 
@@ -39,12 +39,13 @@ static void test_current_loop_budget_clears_the_emf() {
 }
 
 // The reachable speed is where the EMF plus the loop's floor meets the
-// modulation ceiling: (8.325 - 1.6) / 4.416 = 1.523 wheel rad/s = 0.2437 m/s on
-// a 0.32 m wheel — below the 0.3 m/s a bench run used to ask for, which is why
-// that target sat at the ceiling and the drive faulted.
+// modulation ceiling: (8.325 - 1.6) / 3.06 = 2.20 wheel rad/s = 0.35 m/s on a
+// 0.16 m wheel. With the nameplate constant (4.416 V per wheel rad/s) the same
+// expression said 0.2437 m/s, which is what actually capped the drive until the
+// constant was measured on the bench.
 static void test_reachable_rate() {
     const float rate = motor_limits::reachable_wheel_rate(CEILING_V, EMF_PER_WHEEL_RAD_S, FLOOR_V);
-    CHECK(rate > 1.50f && rate < 1.55f);
+    CHECK(rate > 2.15f && rate < 2.25f);
     CHECK(std::abs(rate - (CEILING_V - FLOOR_V) / EMF_PER_WHEEL_RAD_S) < 1e-6f);
 
     // The relationship is linear in the rail, which is what lets one
