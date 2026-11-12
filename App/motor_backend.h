@@ -80,11 +80,13 @@ public:
 
     virtual void set_voltage_point(float volts) = 0;
 
-    // Target wheel speed, m/s — the unit every command source uses (Cyphal,
-    // serial `T`, the cart runtime). The façade ramps the value it actually
-    // applies towards this one (see apply_speed_ramp), so a step command cannot
-    // ask for an acceleration the drive cannot deliver; the six-step stall
-    // watchdog reads such a jump as a stalled start.
+    // Target wheel speed, m/s — the unit the backend works in. Command sources
+    // (serial `T`, the cart runtime) send a NORMALIZED -1..1 set-point through
+    // set_speed_target_normalized(); this form is for internal use (a stop, the
+    // tests). The façade ramps the value it actually applies towards this one
+    // (see apply_speed_ramp), so a step command cannot ask for an acceleration
+    // the drive cannot deliver; the six-step stall watchdog reads such a jump as
+    // a stalled start.
     void set_speed_target(float linear_m_s) {
         speed_target_m_s = linear_m_s;
         if (linear_m_s == 0.0f) {
@@ -96,6 +98,27 @@ public:
             set_wheel_speed_target(0.0f);
             reset_speed_regulator();
         }
+    }
+
+    // Normalized speed command, -1..1, scaled by the configured full-scale
+    // wheel speed (config id 16). This is the shape every command source uses:
+    // the module owns the m/s mapping (wheel radius, gearbox, EMF constant,
+    // modulation ceiling), so a source cannot command a speed the drive has no
+    // voltage to regulate. Out-of-range or non-finite commands are clamped.
+    void set_speed_target_normalized(float command) {
+        const float normalized = std::isfinite(command) ? std::clamp(command, -1.0f, 1.0f) : 0.0f;
+        set_speed_target(normalized * max_speed_m_s);
+    }
+
+    // Full-scale wheel speed the -1..1 commands map onto, m/s (config id 16).
+    void set_max_speed(float m_s) {
+        if (std::isfinite(m_s) && m_s > 0.0f) {
+            max_speed_m_s = m_s;
+        }
+    }
+
+    float get_max_speed() const {
+        return max_speed_m_s;
     }
 
     // Ramp rate of the applied set-point, m/s².
@@ -114,7 +137,11 @@ public:
     // is visible through is_target_clamped().
     void apply_speed_ramp(float dt_s) {
         if (!(dt_s > 0.0f)) return;
-        const float ceiling = speed_ceiling_m_s;
+        // The commanded value is held at the smaller of the configured
+        // full-scale speed and the live ceiling; the ceiling is what the drive
+        // can actually regulate, the configuration is what the operator asked
+        // for.
+        const float ceiling = std::min(speed_ceiling_m_s, max_speed_m_s);
         const float target = std::clamp(speed_target_m_s, -ceiling, ceiling);
         target_clamped = std::abs(target - speed_target_m_s) > 1.0e-6f;
         const float step = speed_ramp_m_s2 * dt_s;
@@ -288,6 +315,11 @@ private:
     // Ceiling the backend reports (see get_speed_ceiling); the routed target is
     // clamped to it. Infinite until a backend says otherwise.
     float speed_ceiling_m_s = std::numeric_limits<float>::infinity();
+    // Full-scale speed a normalized -1..1 command maps onto, m/s (config id 16).
+    // The compiled default mirrors BOOT_MAX_WHEEL_SPEED_M_S in app.cpp; a module
+    // replaces it with the speed its own rail can regulate right after init, and
+    // the config topic/EEPROM can lower it further.
+    float max_speed_m_s = 0.25f;
     bool target_clamped = false;
     // 2 m/s² reaches the cart's top speed in about a second: the six-step
     // watchdog needs the shaft to move within NO_PROGRESS_MS of a command, and a

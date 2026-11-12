@@ -34,5 +34,11 @@ enum ConfigId: int32_t {
     CFG_SPEED_RAMP    = 13,  // m/s^2,         wheel speed set-point ramp
     CFG_TORQUE_RAMP   = 14,  // A/s,           q-current set-point slew (SimpleFOC soft start)
     CFG_BRAKE_CURRENT = 15,  // A,             braking-current ceiling against the motion (regen limit)
-    CFG_ID_COUNT      = 16,  // first invalid id; also the EEPROM record width
+    // Full-scale wheel speed, m/s: the command topics carry a normalized
+    // -1..1 set-point and the module scales it with this value (see
+    // MotorBackend::set_speed_target_normalized). The compiled default is the
+    // speed this rail can still regulate (motor_limits.h), so a fresh module
+    // cannot be commanded past its own modulation ceiling.
+    CFG_MAX_SPEED     = 16,  // m/s,           full-scale wheel speed for -1..1 commands
+    CFG_ID_COUNT      = 17,  // first invalid id; also the EEPROM record width
 };

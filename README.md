@@ -12,9 +12,10 @@
 
 All three sit behind one interface, `App/motor_backend.h` (`MotorBackend`), and
 `App/app.cpp` is implementation-agnostic: it forwards the two CAN command topics
-to `set_voltage_point()` / `set_speed_target()`, calls `update()` every loop
-iteration, runs the speed loop from the fixed 200 Hz slot, and reports
-velocity / accumulated wheel travel / faults identically. `make_motor_backend()`
+to `set_voltage_point()` / `set_speed_target_normalized()` (speed commands are
+-1..1 of the module's full-scale wheel speed, config id 16), calls `update()`
+every loop iteration, runs the speed loop from the fixed 200 Hz slot, and
+reports velocity / accumulated wheel travel / faults identically. `make_motor_backend()`
 is defined by the single backend translation unit CMake compiles in.
 
 Speed, travel and every command source speak wheel units (m/s, m); the m/s <-> wheel rad/s

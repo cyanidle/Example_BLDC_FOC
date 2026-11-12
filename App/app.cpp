@@ -88,6 +88,12 @@ std::unique_ptr<MotorBackend> motor;
 // the motor façade. Keep it in sync with config_defs.lua's wheel_diameter.
 constexpr float BOOT_WHEEL_RADIUS_M = 0.16f;
 
+// Boot-time full-scale speed of a normalized (-1..1) command, m/s, until the
+// backend reports what its rail can regulate and the EEPROM record overrides
+// it. Mirrors the façade's compiled default and mods/config_defs.lua's
+// max_speed default (0.25 m/s: the 18.5 V bench rail regulates 0.24 m/s).
+constexpr float BOOT_MAX_WHEEL_SPEED_M_S = 0.25f;
+
 // Default velocity-PID gains (see motor_tuning.h for the per-implementation
 // values). Overridden at run time by the config topic.
 static PIDConfig make_default_pid_config() {
@@ -145,6 +151,7 @@ static void init_config_defaults() {
     config_values[CFG_SPEED_RAMP] = 2.0f;
     config_values[CFG_TORQUE_RAMP] = motor_tuning::simplefoc_torque_ramp_a_s;
     config_values[CFG_BRAKE_CURRENT] = motor_tuning::simplefoc_brake_current_a;
+    config_values[CFG_MAX_SPEED] = BOOT_MAX_WHEEL_SPEED_M_S;
 }
 
 /* ---- Wheel parameters persisted in the on-board EEPROM ---------------------
@@ -157,8 +164,9 @@ static void init_config_defaults() {
  * The record is the config-values registry below (one float per ConfigId), so
  * a new id only has to join the enum and the apply switch. The version rejects
  * a record written with a different CFG_ID_COUNT or layout: version 3 and
- * earlier kept named fields and are rejected (the module falls back to its
- * compiled defaults — the values are re-tunable over the config topic). The
+ * earlier kept named fields, and version 4 lacks the normalized full-scale
+ * speed (id 16), so both are rejected (the module falls back to its compiled
+ * defaults — the values are re-tunable over the config topic). The
  * value units follow the flashed backend (V on six-step, A on the FOC builds),
  * so a wheel moved between backends needs its gains re-tuned, not re-read. */
 struct StoredWheelConfig {
@@ -168,7 +176,7 @@ struct StoredWheelConfig {
     float values[CFG_ID_COUNT];
 };
 static constexpr uint32_t WHEEL_CONFIG_MAGIC = 0x314E4C47u;  // "GLN1"
-static constexpr uint16_t WHEEL_CONFIG_VERSION = 4;
+static constexpr uint16_t WHEEL_CONFIG_VERSION = 5;
 static constexpr uint16_t WHEEL_CONFIG_ADDRESS = 0;
 static constexpr millis_t CONFIG_SAVE_DEBOUNCE_MS = 1000;
 
@@ -232,6 +240,11 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
     serial_line_init();
     serial_line_debug("boot: motor init");
     HAL_IMPORTANT(motor->init())
+    // The speed this rail can regulate is the boot default for everything that
+    // speaks normalized commands; a stored record may ask for less, the live
+    // ceiling still bounds it (see apply_speed_ramp).
+    motor->set_max_speed(motor->get_speed_ceiling());
+    config_values[CFG_MAX_SPEED] = motor->get_max_speed();
     // The bridge comes up enabled: `motor.start()` pulses the driver's enable
     // line and leaves it asserted. The debug serial channel owns that state
     // (`E0`/`E1`) — no Cyphal command, config write or register access changes
@@ -326,7 +339,7 @@ using Travel = uavcan_si_unit_length_Scalar_1_0;
 static constexpr CanardPortID TRAVEL_PORT = 7100;     // accumulated wheel travel, m
 static constexpr CanardPortID VELOCITY_PORT = 7200;   // shaft angular velocity, rad/s
 static constexpr CanardPortID LINEAR_SPEED_PORT = 7300;  // wheel linear speed, m/s
-static constexpr CanardPortID SPEED_CMD_PORT = 4000;  // target wheel speed command, m/s
+static constexpr CanardPortID SPEED_CMD_PORT = 4000;  // normalized wheel speed command, -1..1
 static constexpr CanardPortID DIRECT_SPEED_CMD_PORT = 4050;  // open-loop voltage command, V
 static constexpr CanardPortID CONFIG_PORT = 4100;     // runtime config (see ConfigSub)
 
@@ -423,6 +436,15 @@ static bool apply_config_value(int32_t id, float value) {
             if (!motor || !motor->set_brake_current(value)) {
                 return false;
             }
+            break;
+        case CFG_MAX_SPEED:
+            // Full-scale speed of a normalized command: a non-positive value
+            // would make every command a stop, and past a few m/s a cart wheel
+            // is not a plausible configuration.
+            if (!motor || !(value > 0.0f) || value > 10.0f) {
+                return false;
+            }
+            motor->set_max_speed(value);
             break;
         default:
             return false;  // unknown id: ignore
@@ -526,10 +548,11 @@ void in_loop_reporting(millis_t current_t) {
     }
 }
 
-// Target wheel speed command, m/s. Enters closed-loop speed regulation; the
-// backend resets its regulator when the mode changes so a stale integral from a
-// previous set-point does not kick the motor. It does not enable: the enable
-// state belongs to the debug serial channel.
+// Normalized target wheel speed command, -1..1 of the module's full-scale speed
+// (config id 16). Enters closed-loop speed regulation; the backend resets its
+// regulator when the mode changes so a stale integral from a previous set-point
+// does not kick the motor. It does not enable: the enable state belongs to the
+// debug serial channel.
 class SpeedCommandSub: public AbstractSubscription<Real32> {
 public:
     SpeedCommandSub(InterfacePtr interface, CanardPortID port_id): AbstractSubscription<Real32>(interface, port_id) {};
@@ -538,7 +561,7 @@ public:
             return;
         }
         serial_line_debug("can speed_cmd", msg.value);
-        motor->set_speed_target(msg.value);  // m/s
+        motor->set_speed_target_normalized(msg.value);
     }
 };
 

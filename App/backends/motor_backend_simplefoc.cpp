@@ -567,6 +567,16 @@ public:
         motor.foc_modulation = FOCModulationType::SinePWM;
         motor.voltage_limit = modulation_limit(driver.voltage_limit);
         voltage_ceiling_v = motor.voltage_limit;
+        // The ceiling is reported here as well as in update(), so the boot
+        // default of the normalized full-scale speed is the speed this rail can
+        // regulate (app.cpp reads it right after init()).
+        set_speed_ceiling(
+            motor_limits::reachable_wheel_rate(
+                motor.voltage_limit,
+                emf_per_wheel_rad_s,
+                tuning::simplefoc_current_loop_v_floor
+            ) * wheel_radius()
+        );
         motor.current_limit = tuning::simplefoc_current_limit_a;
         motor.velocity_limit = tuning::simplefoc_max_shaft_velocity_rad_s;
         motor.LPF_velocity.Tf = tuning::simplefoc_velocity_lpf_tf;

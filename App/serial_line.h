@@ -12,7 +12,12 @@ class MotorBackend;
  * One ASCII request per line, terminated by '\n' (a preceding '\r' is ignored,
  * blank lines are skipped). Replies end with "\r\n".
  *
- *   T<float>   target wheel speed, m/s       -> T=<value>
+ *   T<float>   target wheel speed, -1..1 of the module's full-scale wheel
+ *              speed (config id 16, `G16`)  -> T=<value>
+ *              (the module owns the physical mapping — wheel radius, gearbox,
+ *               back-EMF constant, modulation ceiling — so a bench command
+ *               cannot ask for a speed the drive has no voltage to regulate.
+ *               Values outside -1..1 are clamped.)
  *   Q<float>   open-loop voltage, V          -> Q=<value>
  *   E<0|1>     driver enable                 -> E=<0|1>
  *              (the only way to change it: a module boots enabled and no
@@ -53,9 +58,12 @@ class MotorBackend;
  *              rejected (wrong range, or a knob the compiled backend lacks)
  *   G<id>      read a runtime config value back -> C<id>=<value> (the live
  *              value: compiled default, EEPROM record or last accepted write)
- *   S          one status line now           -> S t=<m/s> v=<rad/s> e=<0|1> f=<FAULT> [i=<A>]
- *              (`i` is the measured q-axis current and appears only on backends
- *               with a current measurement, e.g. SimpleFOC's d/q loop)
+ *   S          one status line now           -> S t=<-1..1> v=<rad/s> e=<0|1> f=<FAULT> [i=<A>]
+ *              (`t` is the commanded normalized set-point — the module's
+ *               commanded m/s over its full-scale speed, whatever source issued
+ *               it; `v` is the wheel angular velocity in rad/s; `i` is the
+ *               measured q-axis current and appears only on backends with a
+ *               current measurement, e.g. SimpleFOC's d/q loop)
  *   A          calibrate the motor and re-tune the
  *              current regulators (SimpleFOC only;
  *              driver must be enabled, wheel lifted) -> A=<0|1>
@@ -88,12 +96,13 @@ class MotorBackend;
  *   anything else                            -> ERR <line>
  *
  * Lines starting with '#' are diagnostics, not replies: the boot trace
- * ("# serial_line ready: motor=... enabled=... fault=... target_m_s=...
+ * ("# serial_line ready: motor=... enabled=... fault=... target=... max_m_s=...
  * voltage_v=...") and the per-command echo.
  *
- * `t` in the status line is the set-point last issued over this channel: a
- * set-point sent over Cyphal is not mirrored there. `v` is the shaft angular
- * velocity in rad/s, as reported by the backend.
+ * `t` in the `D` diagnostics line is the applied physical set-point in m/s
+ * (the ramp's output); the normalized command in the `S` line is the value the
+ * sources send. Both are reported, so a clamped or ramping drive is visible
+ * either way.
  */
 
 #ifdef __cplusplus

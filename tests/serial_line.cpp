@@ -28,6 +28,7 @@ bool app_apply_config(int32_t id, float value) {
     if (id < 0 || id >= CFG_ID_COUNT) return false;
     if (id == CFG_VEL_LPF && !(value >= 0.0f && value <= 1.0f)) return false;
     if (id == CFG_SPEED_RAMP && !(value > 0.0f && value <= 100.0f)) return false;
+    if (id == CFG_MAX_SPEED && !(value > 0.0f && value <= 10.0f)) return false;
     if (!config_apply_ok) return false;
     config_store[id] = value;
     return true;
@@ -144,42 +145,64 @@ void send_slow(FakeMotor& motor, const std::string& text, size_t chunk) {
 }
 
 void test_setpoints(FakeMotor& motor) {
+    // T is normalized: 0.5 is half of the module's full-scale wheel speed
+    // (0.25 m/s by default, config id 16).
     send(motor, "T0.5\r\n");
     CHECK(take_tx() == "T=0.500\r\n");
     settle(motor);
-    CHECK(motor.target == wheel_rad_s(0.5f));
+    CHECK(motor.target == wheel_rad_s(0.125f));
 
     send(motor, "Q2.25\n");
     CHECK(take_tx() == "Q=2.250\r\n");
     CHECK(motor.voltage == 2.25f);
 
-    send(motor, "T-1.25\n");
-    CHECK(take_tx() == "T=-1.250\r\n");
+    send(motor, "T-1\n");
+    CHECK(take_tx() == "T=-1.000\r\n");
     settle(motor);
-    CHECK(motor.target == wheel_rad_s(-1.25f));
+    CHECK(motor.target == wheel_rad_s(-0.25f));
 
+    // Out of range is clamped to full scale, not rejected: a slider at its end
+    // must stop, not answer ERR in the middle of a drag.
     send(motor, "T12.3456\n");
-    CHECK(take_tx() == "T=12.346\r\n");
+    CHECK(take_tx() == "T=1.000\r\n");
+    settle(motor);
+    CHECK(motor.target == wheel_rad_s(0.25f));
+    send(motor, "T-12.3456\n");
+    CHECK(take_tx() == "T=-1.000\r\n");
+
+    // The full-scale speed is a config value and is read back like any other.
+    send(motor, "C16:0.4\n");
+    CHECK(take_tx() == "C16=0.400\r\n");
+    send(motor, "G16\n");
+    CHECK(take_tx() == "C16=0.4000\r\n");
+    send(motor, "C16\n");
+    CHECK(take_tx() == "ERR C16\r\n");
+    // A non-positive or silly full scale is rejected like any other bad value.
+    send(motor, "C16:0\n");
+    CHECK(take_tx() == "ERR C16:0\r\n");
 }
 
 void test_speed_target_uses_wheel_radius(FakeMotor& motor) {
+    // Clear the applied set-point first: the ramp only re-derives the wheel
+    // rad/s when it actually moves, so a radius change on its own keeps the
+    // previous conversion (the radius is read at the ramp, not at the command).
+    motor.set_speed_target(0.0f);
     motor.set_wheel_radius(0.1f);
-    send(motor, "T0.5\n");
-    CHECK(take_tx() == "T=0.500\r\n");
+    send(motor, "T1\n");  // full scale of the default 0.25 m/s
+    CHECK(take_tx() == "T=1.000\r\n");
     settle(motor);
-    CHECK(std::abs(motor.target - 5.0f) < 1e-4f);
+    CHECK(std::abs(motor.target - 2.5f) < 1e-4f);
 
     motor.velocity = 10.0f;
     CHECK(std::abs(motor.get_linear_velocity() - 1.0f) < 1e-4f);
     motor.velocity = 0.0f;
 
+    motor.set_speed_target(0.0f);
     motor.set_wheel_radius(RADIUS_M);
-    send(motor, "T0\n");  // a radius change alone does not re-derive the set-point
-    take_tx();
     send(motor, "T0.5\n");
     CHECK(take_tx() == "T=0.500\r\n");
     settle(motor);
-    CHECK(motor.target == wheel_rad_s(0.5f));
+    CHECK(motor.target == wheel_rad_s(0.125f));
 }
 
 void test_enable(FakeMotor& motor) {
@@ -354,10 +377,10 @@ void test_rx_overflow(FakeMotor& motor) {
     send(motor, "S\n");
     CHECK(take_tx().rfind("S t=", 0) == 0);
 
-    send(motor, "T9.5\n");
-    CHECK(take_tx() == "T=9.500\r\n");
+    send(motor, "T0.8\n");
+    CHECK(take_tx() == "T=0.800\r\n");
     settle(motor);
-    CHECK(motor.target == wheel_rad_s(9.5f));
+    CHECK(motor.target == wheel_rad_s(0.2f));
 
     send(motor, "X\n");
     take_tx();
@@ -534,6 +557,7 @@ void test_speed_path_is_sign_symmetric(FakeMotor& motor) {
     // and the other kicked. This test pins the speed path down against the same
     // class of bug: same command magnitude, same ramp, same clamp, mirrored.
     motor.set_ceiling(1.0f);
+    motor.set_max_speed(1.0f);   // full scale, so the ceiling is what clamps
     motor.set_speed_ramp(2.0f);  // m/s^2, the façade default
 
     // Ramp transient: one 100 ms period at 2 m/s^2 = 0.2 m/s, both signs.
@@ -576,6 +600,7 @@ void test_speed_path_is_sign_symmetric(FakeMotor& motor) {
 
     motor.set_speed_target(0.0f);
     motor.set_ceiling(1000.0f);
+    motor.set_max_speed(0.25f);
     motor.set_speed_ramp(2.0f);
 }
 

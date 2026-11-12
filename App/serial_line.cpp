@@ -46,7 +46,6 @@ bool line_noise = false;
 volatile bool rx_overflow = false;
 
 struct SetPoints {
-    float target_m_s = 0.0f;
     float voltage_v = 0.0f;
     unsigned telemetry_hz = 0;
     millis_t telemetry_time = 0;
@@ -256,8 +255,11 @@ void send_boot_trace(MotorBackend& motor) {
     line_unsigned(line, motor.is_on() ? 1 : 0);
     line_text(line, " fault=");
     line_text(line, fault_name(motor.get_fault()));
-    line_text(line, " target_m_s=");
-    line_fixed(line, set_points.target_m_s, 3);
+    line_text(line, " target=");
+    line_fixed(line, motor.get_max_speed() > 0.0f ?
+        motor.get_speed_target() / motor.get_max_speed() : 0.0f, 3);
+    line_text(line, " max_m_s=");
+    line_fixed(line, motor.get_max_speed(), 3);
     line_text(line, " voltage_v=");
     line_fixed(line, set_points.voltage_v, 3);
     line_finish(line);
@@ -272,7 +274,10 @@ void send_echo(const char* command) {
 
 void send_status(MotorBackend& motor) {    Line line;
     line_text(line, "S t=");
-    line_fixed(line, set_points.target_m_s, 3);
+    // Normalized command (the value sources send): the commanded m/s over the
+    // module's full-scale speed, whatever source issued it.
+    const float full_scale = motor.get_max_speed();
+    line_fixed(line, full_scale > 0.0f ? motor.get_speed_target() / full_scale : 0.0f, 3);
     line_text(line, " v=");
     line_fixed(line, motor.get_velocity(), 3);
     line_text(line, " e=");
@@ -426,7 +431,7 @@ void trace_service() {
 
 void send_help() {
     static const char* const help[] = {
-        "# T<float>  target wheel speed, m/s",
+        "# T<float>  target wheel speed, -1..1 of the full-scale speed",
         "# Q<float>  open-loop voltage, V",
         "# E<0|1>    driver enable",
         "# X         zero both set-points",
@@ -436,7 +441,7 @@ void send_help() {
         "# L<float>  velocity feedback low-pass, s (config id 12, persisted)",
         "# R<float>  wheel speed set-point ramp, m/s^2 (config id 13, persisted)",
         "# C<id>:<v> set a runtime config value (ids: see config_defs.lua)",
-        "# G<id>     read a runtime config value back",
+        "# G<id>     read a runtime config value back (16 = full-scale m/s)",
         "# K         loop-trace event counters (`# K ...`)",
         "# W         dump the loop trace now (`# T ...` lines)",
         "# W<0|1>    arm the automatic trace dump (0/1)",
@@ -484,13 +489,18 @@ void handle_command(const char* command, MotorBackend& motor) {
 
     switch (command[0]) {
         case 'T': {
+            // Normalized -1..1 of the module's full-scale speed (config id 16):
+            // the module owns the m/s mapping, so a bench command cannot ask
+            // for a speed the drive has no voltage to regulate. Out-of-range
+            // values are clamped, not rejected (a slider at its end stops).
             float value = 0.0f;
             if (!parse_float(argument, value)) {
                 send_error(command);
                 return;
             }
-            set_points.target_m_s = value;
-            motor.set_speed_target(value);
+            if (value > 1.0f) value = 1.0f;
+            else if (value < -1.0f) value = -1.0f;
+            motor.set_speed_target_normalized(value);
             line_text(line, "T=");
             line_fixed(line, value, 3);
             break;
@@ -523,9 +533,8 @@ void handle_command(const char* command, MotorBackend& motor) {
                 send_error(command);
                 return;
             }
-            set_points.target_m_s = 0.0f;
             set_points.voltage_v = 0.0f;
-            motor.set_speed_target(0.0f);
+            motor.set_speed_target_normalized(0.0f);
             motor.set_voltage_point(0.0f);
             line_text(line, "OK");
             break;
