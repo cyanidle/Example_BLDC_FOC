@@ -71,13 +71,14 @@ class MotorBackend;
  *               measured and the current PID gains re-derived from them; the
  *               values arrive as "# simplefoc calibrate: ..." debug lines and
  *               the gains live until reboot. Zero the set-points first.)
- *   K          stop/limit counters, four lines -> "# K1 hall bad=<n> edges=<n>
- *              rate_bad=<n> snap=<n> wrap=<n> vel_to=<n>"
+ *   K          stop/limit counters, five lines -> "# K1 hall bad=<n> edges=<n>
+ *              calls=<n> rate_bad=<n> snap=<n> wrap=<n>"
  *              "# K2 stop guard_oc=<n> stall=<n> derate_hi=<n>
  *              derate_lo=<n> driver=<n> coast=<n>"
  *              "# K3 limit clamp=<n> cur=<n> volt=<n> brake=<n> reset=<n>"
- *              "# K4 loop slow=<n> max_us=<n> heap=<hot>/<all>
+ *              "# K4 loop slow=<n> max_us=<n> vel_to=<n> heap=<hot>/<all>
  *              heap_us=<hot_max>/<all_max>"
+ *              "# K5 ph pid=<n> update=<n> poll=<n> persist=<n> cyphal=<n>"
  *              (One counter per mechanism that can stop the drive or take
  *               authority from a regulator, absolute totals since boot: read it
  *               before and after an event and the counter that moved names the
@@ -92,7 +93,10 @@ class MotorBackend;
  *               regulator resets. Loop: control periods over budget and the
  *               worst one since boot, plus free-store allocations made while
  *               the loop was running and the worst allocator call — the loop is
- *               required to make none, see App/heap_probe.h.)
+ *               required to make none, see App/heap_probe.h — and the worst
+ *               duration of each phase of the app loop (pid slot, update, serial
+ *               poll, config persistence, cyphal), which is what attributes a
+ *               stall to a phase instead of leaving it a total.)
  *   W          dump the loop trace now       -> "# trace: samples=<n> depth=128"
  *              then one "# T <ms> e=<deg> a=<deg> v=<rad/s> iq=<A> id=<A>
  *              im=<A> uq=<V> ud=<V> b=<V> h=<0..7> ev=<bits>" line per sample

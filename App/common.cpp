@@ -35,11 +35,9 @@ micros_t micros_64() {
 // loop phases: -996 us between two reads taken microseconds apart. Every dt in
 // the drive comes from here, so the symptom is a pass with dt = 0 (a skipped
 // ramp/slew step) roughly once per millisecond boundary that a long critical
-// section happens to straddle. Folding the pending update flag in over-corrects
-// by +1 ms (the flag is visible both before and after the callback), which is
-// worse, so this is left as is until the timebase is moved to hardware —
-// DWT->CYCCNT at the core clock (wraps every 25 s at 170 MHz, extended in
-// software) has no such window at all. Do not paper over it per caller.
+// section happens to straddle. The fix is a hardware timebase — DWT->CYCCNT at
+// the core clock (wraps every 25 s at 170 MHz, extended in software) has no such
+// window at all. Do not paper over it per caller.
 
 millis_t millis_32() {
     return millis_k;

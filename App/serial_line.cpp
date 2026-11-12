@@ -513,7 +513,7 @@ void send_help() {
         "# R<float>  wheel speed set-point ramp, m/s^2 (config id 13, persisted)",
         "# C<id>:<v> set a runtime config value (ids: see config_defs.lua)",
         "# G<id>     read a runtime config value back (16 = full-scale m/s)",
-        "# K         stop/limit counters, one per mechanism (`# K1..K3 ...`)",
+        "# K         stop/limit counters, one per mechanism (`# K1..K5 ...`)",
         "# W         dump the loop trace now (`# T ...` lines)",
         "# W<0|1>    arm the automatic trace dump (0/1)",
         "# A         calibrate motor R/L, re-tune current loop",

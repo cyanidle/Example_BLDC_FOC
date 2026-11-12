@@ -65,12 +65,13 @@ DriveInfo drive_info {
     // every voltage and speed budget derives from it (App/motor_limits.h).
     // MEASURED, not nameplate: hold steady speeds and fit the applied q-voltage
     // against the hall-derived shaft rate (the halls count the rotor, so no
-    // gearbox or nameplate enters the measurement). On this module
-    // 2026-11-12: |u| = 4.40 V at 89.0 rotor rad/s forward, 4.37 V at 88.9
-    // reverse -> 0.0478 V/(rotor rad/s) both ways, i.e. 3.06 V per WHEEL rad/s.
+    // gearbox or nameplate enters the measurement). On this module 2026-11-12,
+    // with debug/bench_speed_sweep.txt: |u| = 6.34..6.41 V at 2.09..2.12 wheel
+    // rad/s forward and 6.38 V at 2.09 reverse -> 0.0472..0.0482 V per rotor
+    // rad/s over the whole range, i.e. 3.06 V per WHEEL rad/s.
     // The nameplate 0.069 was 44 % high, and because the speed ceiling is
-    // (modulation limit - floor) / EMF it capped the drive at 0.2435 m/s where
-    // the same 18.5 V rail and headroom reach 0.35.
+    // (modulation limit - floor) / EMF it capped the drive at 0.1943 m/s where
+    // the same 18.5 V rail and headroom reach 0.2795.
     .torque_const = 0.0478f,
     .max_current = 8,
     .max_torque = 1,
@@ -230,8 +231,8 @@ void loop_phase_timing(LoopPhase phase, micros_t& mark) {
     const micros_t now = micros_64();
     const int64_t elapsed = subtract_64(now, mark);
     mark = now;
-    // The clock is microsecond-monotonic now (see micros_64), but a phase that
-    // reads back as negative would pin the maximum forever: drop it instead.
+    // The clock can step back ~1 ms across a millisecond boundary (see
+    // micros_64); a negative sample would pin the maximum forever, so drop it.
     if (elapsed < 0) {
         return;
     }
