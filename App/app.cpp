@@ -229,7 +229,11 @@ static void mark_config_changed() {
             break;
         }
     }
-    if (!differs) return;
+    if (!differs) {
+        // Edited back to what the record already holds: nothing left to write.
+        config_changed_at = 0;
+        return;
+    }
     const millis_t now = millis_32();
     config_changed_at = now ? now : 1;  // 0 is the "clean" sentinel
 }
@@ -341,6 +345,10 @@ void loop_phase_timing(LoopPhase phase, micros_t& mark) {
     // ceiling still bounds it (see apply_speed_ramp).
     motor->set_max_speed(motor->get_speed_ceiling());
     config_values[CFG_MAX_SPEED] = motor->get_max_speed();
+    // This is the value the module runs with until a record says otherwise, so
+    // it is what "already stored" means here: a GUI that reads C16 back and
+    // pushes the same number must not turn that into a write.
+    stored_values[CFG_MAX_SPEED] = config_values[CFG_MAX_SPEED];
     // The bridge comes up enabled: `motor.start()` pulses the driver's enable
     // line and leaves it asserted. The debug serial channel owns that state
     // (`E0`/`E1`) — no Cyphal command, config write or register access changes

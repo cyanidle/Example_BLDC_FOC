@@ -10,8 +10,9 @@
  * bridge keeps its last commanded vector for that whole time. An operator
  * editing a tunable while the cart drives must not buy that stall, so the write
  * waits for a state where it costs nothing: no speed set-point, none applied,
- * and the wheel not turning (which also covers the open-loop voltage channel,
- * where the set-points are zero while the wheel spins).
+ * and the wheel not turning. The measured speed covers the open-loop voltage
+ * channel, and a latched speed set-point covers a `Q` command that followed a
+ * `T` (set_voltage_point does not clear the target) — either one defers.
  */
 namespace config_persist {
 
