@@ -49,7 +49,7 @@ public:
     virtual size_t println() = 0;
 };
 
-// The stock Arduino time API, backed by the firmware's TIM7 microsecond base.
+// The stock Arduino time API, backed by the firmware's DWT cycle counter.
 // libvoltbro names its time types millis_t/micros_t, so the Arduino names are free.
 unsigned long millis();
 unsigned long micros();

@@ -123,13 +123,14 @@ PWM hooks with the TIM1/INH channels of this board.
   `VB_SIMPLEFOC_ALIGN_ON_INIT=1` (backend defines) to find the zero electrical
   angle at start-up, or set `VB_SIMPLEFOC_SENSOR_DIRECTION` /
   `VB_SIMPLEFOC_ZERO_ELECTRIC_ANGLE` to known values.
-- PWM 25 kHz, a 19 V driver cap and 8 A current limit, velocity PID 0.05 / 2.0
-  and `LPF_velocity.Tf = 0.1` follow the reference bring-up sketch for this wheel
-  module; they live in `App/motor_tuning.h`.
-- `motor.voltage_limit` is additionally clamped to `driver.voltage_limit / 2`:
-  centered SinePWM swings every phase around half the driver limit, so a larger
-  q-voltage set-point would only flat-top the sine. The 17 V entry in
-  `motor_tuning.h` is the upper bound, not the effective limit on a 24 V bus.
+- PWM 25 kHz, a 60 V driver cap, 30 V phase cap and 8 A current limit; the
+  velocity PID is 2.1 / 1.11 and `LPF_velocity.Tf = 0.05`. These bench-tuned
+  values live in `App/motor_tuning.h`.
+- `motor.voltage_limit` is the smaller of the 30 V phase cap and
+  `driver.voltage_limit * 0.5 * 0.9`: centered SinePWM swings every phase around
+  half the driver limit, and the 0.9 headroom preserves bootstrap refresh. The
+  live bus remains the binding limit below those compiled caps; applying Q10
+  without clipping requires about 22.3 V on the rail.
 
 #### Current control
 
@@ -165,14 +166,14 @@ which is how the sign check above is observed.
 Three layers, so no command source can step the bridge:
 
 - speed commands are ramped by the `MotorBackend` façade
-  (`apply_speed_ramp`, 2 m/s²) before they reach the velocity PID;
+  (`apply_speed_ramp`, 0.75 m/s²) before they reach the velocity PID;
 - the velocity PID's output (the q-current set-point) is slewed by
-  `PID_velocity.output_ramp` (`simplefoc_torque_ramp_a_s`, 8 A/s), so the
-  torque builds over ~1 s to the current limit and a PID reset (enable, mode
+  `PID_velocity.output_ramp` (`simplefoc_torque_ramp_a_s`, 50 A/s), so the
+  torque builds over ~160 ms to the current limit and a PID reset (enable, mode
   switch) restarts the ramp from zero;
 - the open-loop voltage channel slews its applied voltage
   (`simplefoc_voltage_ramp_v_s`, 20 V/s) in `update()`; a zero command
-  bypasses the ramp and parks the bridge immediately;
+  enters the current-controlled coast mode instead of shorting the phases;
 - the current guard (`App/current_guard.h`) watches the common-mode-removed
   phase-current magnitude: while it is over the current limit the open-loop
   channel's voltage ceiling integrates down (current-limited acceleration),
