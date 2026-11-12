@@ -251,6 +251,10 @@ public:
         return wheel_radius_m;
     }
 
+    // Open-loop voltage the backend is applying right now, V (magnitude; 0 on a
+    // backend without the channel, and 0 while the speed loop owns the bridge).
+    virtual float get_voltage_point() const { return 0.0f; }
+
     virtual MotorFault get_fault() const { return MotorFault::NONE; }
     virtual uint8_t get_recovery_attempts() const { return 0; }
 

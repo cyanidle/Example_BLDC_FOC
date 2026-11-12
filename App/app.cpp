@@ -219,7 +219,7 @@ static constexpr millis_t CONFIG_SAVE_DEBOUNCE_MS = 1000;
 static millis_t config_changed_at = 0;
 
 static void load_stored_wheel_config();
-static void save_stored_wheel_config();
+static bool save_stored_wheel_config();
 
 static void mark_config_changed() {
     bool differs = false;
@@ -230,7 +230,6 @@ static void mark_config_changed() {
         }
     }
     if (!differs) {
-        // Edited back to what the record already holds: nothing left to write.
         config_changed_at = 0;
         return;
     }
@@ -251,6 +250,7 @@ static void service_config_persistence(millis_t now_ms) {
             .speed_target_m_s = motor->get_speed_target(),
             .applied_target_m_s = motor->get_applied_speed_target(),
             .linear_velocity_m_s = motor->get_linear_velocity(),
+            .open_loop_voltage_v = motor->get_voltage_point(),
         };
         if (!config_persist::drive_idle(state)) {
             if (!deferred_logged) {
@@ -260,9 +260,15 @@ static void service_config_persistence(millis_t now_ms) {
             return;
         }
     }
-    deferred_logged = false;
-    config_changed_at = 0;
-    save_stored_wheel_config();
+    if (save_stored_wheel_config()) {
+        deferred_logged = false;
+        config_changed_at = 0;
+    }
+    else {
+        // The record stays pending: retry no faster than the debounce (a missing
+        // or failing EEPROM must not turn into a write/log storm).
+        config_changed_at = now_ms ? now_ms : 1;
+    }
 }
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
@@ -608,11 +614,12 @@ static void load_stored_wheel_config() {
 }
 
 /// Persist the live wheel parameters. A failed write is logged, not fatal: the
-/// drive keeps running on the values it already has.
-static void save_stored_wheel_config() {
+/// drive keeps running on the values it already has, and the caller keeps the
+/// record pending. Returns whether the record reached the EEPROM.
+static bool save_stored_wheel_config() {
     if (!eeprom.is_connected()) {
         serial_line_debug("eeprom: absent, wheel config not saved");
-        return;
+        return false;
     }
     StoredWheelConfig stored{};
     stored.magic = WHEEL_CONFIG_MAGIC;
@@ -623,12 +630,13 @@ static void save_stored_wheel_config() {
     }
     if (eeprom.write<StoredWheelConfig>(&stored, WHEEL_CONFIG_ADDRESS) != HAL_OK) {
         serial_line_debug("eeprom: write failed");
-        return;
+        return false;
     }
     for (int32_t id = 0; id < CFG_ID_COUNT; ++id) {
         stored_values[id] = config_values[id];
     }
     serial_line_debug("eeprom: wheel config saved");
+    return true;
 }
 
 bool app_apply_config(int32_t id, float value) {

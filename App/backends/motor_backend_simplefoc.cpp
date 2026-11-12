@@ -1091,6 +1091,12 @@ public:
         push_trace_sample(now);
     }
 
+    // The open-loop channel is the only thing that applies voltage in this
+    // backend; the velocity path works through the q-current set-point instead.
+    float get_voltage_point() const override {
+        return speed_mode ? 0.0f : std::fabs(voltage_applied);
+    }
+
     void set_voltage_point(float volts) override {
         speed_mode = false;
         motor.controller = MotionControlType::torque;
