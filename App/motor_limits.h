@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 
 /*
@@ -10,6 +11,27 @@
  * bus, so a limit baked against one supply reads wrong on the next one.
  */
 namespace motor_limits {
+
+enum class SupplyDerate {
+    NONE,
+    RAIL_HIGH,
+    RAIL_LOW,
+};
+
+inline float directional_torque_limit(
+    float demand_a,
+    float wheel_rate_rad_s,
+    float stopped_rate_rad_s,
+    SupplyDerate derate,
+    float scale
+) {
+    const bool moving = std::abs(wheel_rate_rad_s) > stopped_rate_rad_s;
+    const float torque_motion = demand_a * wheel_rate_rad_s;
+    const bool blocked =
+        (derate == SupplyDerate::RAIL_HIGH && moving && torque_motion < 0.0f) ||
+        (derate == SupplyDerate::RAIL_LOW && (!moving || torque_motion > 0.0f));
+    return blocked ? demand_a * std::clamp(scale, 0.0f, 1.0f) : demand_a;
+}
 
 // q-voltage the current loops must be allowed to apply at `wheel_rate_rad_s`:
 // the back-EMF plus the low-speed floor (phase IR and one-pass transients, see

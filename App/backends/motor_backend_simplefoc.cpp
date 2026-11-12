@@ -364,10 +364,13 @@ private:
     // counts how long it has been released again, so a transient trip cannot
     // re-arm the loop on the first quiet pass.
     bool driver_fault_active = false;
+    bool driver_fault_resume = false;
     float driver_fault_release_s = 0.0f;
-    // 1 while the supply rail is healthy, 0 when it has drooped: scales the
-    // torque demand (see the derate block in update()).
+    // 1 while the supply rail is healthy, 0 during a confirmed excursion. The
+    // side selects which velocity-loop torque sign is scaled; the open-loop
+    // voltage ceiling keeps using the magnitude.
     float supply_derate = 1.0f;
+    motor_limits::SupplyDerate supply_derate_side = motor_limits::SupplyDerate::NONE;
     // Wheel (gearbox output) radians per rotor Hall count.
     float wheel_rad_per_count = 0.0f;
     // Timestamp of the previous update(), for the open-loop voltage ramp.
@@ -724,10 +727,12 @@ public:
         driver_fault_active = driver_fault_asserted();
         driver_fault_release_s = 0.0f;
         motor.enable();
+        driver_fault_resume = true;
         return HAL_OK;
     }
 
     HAL_StatusTypeDef stop() override {
+        driver_fault_resume = false;
         motor.disable();
         HAL_GPIO_WritePin(DRV_ENABLE_GPIO_Port, DRV_ENABLE_Pin, GPIO_PIN_RESET);
         // An explicit `E0` outranks the guard's re-arm: the operator parked the
@@ -799,7 +804,7 @@ public:
             motor.PID_current_q.limit = current_loop_v;
             motor.PID_current_d.limit = current_loop_v;
             motor.PID_velocity.limit =
-                std::min(velocity_pid.max_output, motor.current_limit) * supply_derate;
+                std::min(velocity_pid.max_output, motor.current_limit);
             // Largest wheel speed this rail can still regulate; the façade
             // clamps the speed target to it, so a command past the modulation
             // ceiling cannot saturate the current loops (see motor_limits.h).
@@ -840,6 +845,8 @@ public:
                 // Immediate: the rail crosses these thresholds in tens of
                 // milliseconds, so there is no time to ramp the demand down.
                 supply_derate = 0.0f;
+                supply_derate_side = rail_high ?
+                    motor_limits::SupplyDerate::RAIL_HIGH : motor_limits::SupplyDerate::RAIL_LOW;
                 if (!trace_derated) {
                     trace_derated = true;
                     // Which side of the window: the droop side is a supply that
@@ -860,6 +867,9 @@ public:
                         1.0f,
                         supply_derate + tuning::simplefoc_supply_derate_rate_per_s * dt_s
                     );
+                    if (supply_derate >= 1.0f) {
+                        supply_derate_side = motor_limits::SupplyDerate::NONE;
+                    }
                 }
             }
             voltage_ceiling_v = std::min(voltage_ceiling_v, motor.voltage_limit * supply_derate);
@@ -885,6 +895,7 @@ public:
         if (driver_fault_asserted()) {
             if (!driver_fault_active) {
                 serial_line_debug("simplefoc: gate driver FAULT, bridge parked");
+                driver_fault_resume = motor.enabled;
                 ++driver_fault_count;
             }
             driver_fault_active = true;
@@ -909,7 +920,10 @@ public:
                 // by itself (a supply dip), so re-arm the loop.
                 driver_fault_active = false;
                 reset_torque_regulators();
-                motor.enable();
+                if (driver_fault_resume) {
+                    motor.enable();
+                }
+                driver_fault_resume = false;
                 fault = MotorFault::NONE;
             }
         }
@@ -1154,6 +1168,13 @@ public:
             ++brake_clamp_count;
         }
         brake_clamp_active = clipped;
+        motor.current_sp = motor_limits::directional_torque_limit(
+            motor.current_sp,
+            motion,
+            stopped_wheel_rate,
+            supply_derate_side,
+            supply_derate
+        );
     }
 
     void set_velocity_pid(const PIDConfig& config) override {

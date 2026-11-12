@@ -67,10 +67,32 @@ static void test_degenerate_inputs() {
     CHECK(motor_limits::reachable_wheel_rate(FLOOR_V * 0.5f, EMF_PER_WHEEL_RAD_S, FLOOR_V) == 0.0f);
 }
 
+static void test_directional_supply_derate() {
+    using motor_limits::SupplyDerate;
+    constexpr float stopped = 0.05f;
+
+    CHECK(motor_limits::directional_torque_limit(4.0f, 2.0f, stopped, SupplyDerate::NONE, 0.0f) == 4.0f);
+    CHECK(motor_limits::directional_torque_limit(4.0f, 2.0f, stopped, SupplyDerate::RAIL_HIGH, 0.0f) == 4.0f);
+    CHECK(motor_limits::directional_torque_limit(-4.0f, 2.0f, stopped, SupplyDerate::RAIL_HIGH, 0.0f) == 0.0f);
+    CHECK(motor_limits::directional_torque_limit(4.0f, -2.0f, stopped, SupplyDerate::RAIL_HIGH, 0.0f) == 0.0f);
+    CHECK(motor_limits::directional_torque_limit(-4.0f, -2.0f, stopped, SupplyDerate::RAIL_HIGH, 0.0f) == -4.0f);
+
+    CHECK(motor_limits::directional_torque_limit(4.0f, 2.0f, stopped, SupplyDerate::RAIL_LOW, 0.0f) == 0.0f);
+    CHECK(motor_limits::directional_torque_limit(-4.0f, 2.0f, stopped, SupplyDerate::RAIL_LOW, 0.0f) == -4.0f);
+    CHECK(motor_limits::directional_torque_limit(4.0f, -2.0f, stopped, SupplyDerate::RAIL_LOW, 0.0f) == 4.0f);
+    CHECK(motor_limits::directional_torque_limit(-4.0f, -2.0f, stopped, SupplyDerate::RAIL_LOW, 0.0f) == 0.0f);
+
+    CHECK(motor_limits::directional_torque_limit(4.0f, 0.0f, stopped, SupplyDerate::RAIL_LOW, 0.0f) == 0.0f);
+    CHECK(motor_limits::directional_torque_limit(4.0f, 0.0f, stopped, SupplyDerate::RAIL_HIGH, 0.0f) == 4.0f);
+    CHECK(motor_limits::directional_torque_limit(-4.0f, 2.0f, stopped, SupplyDerate::RAIL_HIGH, 0.25f) == -1.0f);
+    CHECK(motor_limits::directional_torque_limit(4.0f, 2.0f, stopped, SupplyDerate::RAIL_LOW, 2.0f) == 4.0f);
+}
+
 int main() {
     test_current_loop_budget_clears_the_emf();
     test_reachable_rate();
     test_degenerate_inputs();
+    test_directional_supply_derate();
     std::cout << "motor_limits: ok\n";
     return 0;
 }
