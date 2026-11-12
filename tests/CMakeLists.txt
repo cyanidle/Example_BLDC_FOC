@@ -38,6 +38,16 @@ target_include_directories(motor_limits PRIVATE
 target_compile_options(motor_limits PRIVATE -Wall -Wextra -Wno-reorder)
 add_test(NAME motor_limits COMMAND motor_limits)
 
+add_executable(config_persist
+    config_persist.cpp
+)
+target_compile_features(config_persist PRIVATE cxx_std_20)
+target_include_directories(config_persist PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/../App
+)
+target_compile_options(config_persist PRIVATE -Wall -Wextra -Wno-reorder)
+add_test(NAME config_persist COMMAND config_persist)
+
 add_executable(cycle_counter
     cycle_counter.cpp
 )

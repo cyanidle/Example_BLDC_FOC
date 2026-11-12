@@ -24,6 +24,7 @@
 #include <voltbro/devices/inverter.hpp>
 
 #include "config_ids.h"
+#include "config_persist.h"
 #include "heap_probe.h"
 #include "loop_trace.h"
 #include "motor_backend.h"
@@ -146,6 +147,12 @@ static float integral_error_limit(float limit_v, float ki) {
  * stored EEPROM record override it. */
 static float config_values[CFG_ID_COUNT];
 
+// Shadow of what the EEPROM record holds (see the persistence block below): an
+// edit only marks the record dirty when it differs from this, so a GUI that
+// keeps re-sending the values it read back never rewrites the cell. EEPROM
+// endurance is the scarce resource here, not bandwidth.
+static float stored_values[CFG_ID_COUNT];
+
 static void init_config_defaults() {
     config_values[CFG_WHEEL_DIAMETER] = BOOT_WHEEL_RADIUS_M * 2.0f;
     config_values[CFG_PID_KP] = velocity_pid_config.kp;
@@ -165,14 +172,29 @@ static void init_config_defaults() {
     config_values[CFG_TORQUE_RAMP] = motor_tuning::simplefoc_torque_ramp_a_s;
     config_values[CFG_BRAKE_CURRENT] = motor_tuning::simplefoc_brake_current_a;
     config_values[CFG_MAX_SPEED] = BOOT_MAX_WHEEL_SPEED_M_S;
+
+    // Until a record says otherwise the compiled defaults are "what is stored":
+    // the first edit that differs is what makes the record dirty.
+    for (int32_t id = 0; id < CFG_ID_COUNT; ++id) {
+        stored_values[id] = config_values[id];
+    }
 }
 
 /* ---- Wheel parameters persisted in the on-board EEPROM ---------------------
  * The modules kept their runtime config in RAM only, so a power cycle reverted a
- * wheel to the compiled-in defaults. Every applied config change is written back
- * after CONFIG_SAVE_DEBOUNCE_MS of quiet — a GUI session sends value after value,
- * and one EEPROM write per keystroke would wear the cell out. The magic and the
- * version reject an erased (0xFF) or foreign EEPROM.
+ * wheel to the compiled-in defaults. Writes are kept rare, because the EEPROM
+ * cell endurance is what a tuning habit wears out:
+ *  - only a value that differs from the stored record marks it dirty
+ *    (mark_config_changed compares the registry with the shadow), so a GUI
+ *    re-sending what it read back writes nothing;
+ *  - edits are batched: a GUI session sends value after value and the record is
+ *    written once, after CONFIG_SAVE_DEBOUNCE_MS of quiet;
+ *  - the write waits for an idle drive (config_persist::drive_idle), because it
+ *    stalls the loop ~14 ms and the bridge holds its last vector for that long.
+ * A pending record is lost if the module loses power before it idles; the
+ * values themselves are live in RAM from the moment they are accepted.
+ *
+ * The magic and the version reject an erased (0xFF) or foreign EEPROM.
  *
  * The record is the config-values registry below (one float per ConfigId), so
  * a new id only has to join the enum and the apply switch. The version rejects
@@ -200,14 +222,41 @@ static void load_stored_wheel_config();
 static void save_stored_wheel_config();
 
 static void mark_config_changed() {
+    bool differs = false;
+    for (int32_t id = 0; id < CFG_ID_COUNT; ++id) {
+        if (config_values[id] != stored_values[id]) {
+            differs = true;
+            break;
+        }
+    }
+    if (!differs) return;
     const millis_t now = millis_32();
     config_changed_at = now ? now : 1;  // 0 is the "clean" sentinel
 }
 
-/// Write the pending config once the operator has stopped editing for a second.
+/// Write the pending config once the operator has stopped editing for a second
+/// AND the drive is idle. A record write stalls the loop ~14 ms (K5 `persist`),
+/// so it never happens under a running drive: the value is already live in RAM
+/// and the record follows at the next idle moment.
 static void service_config_persistence(millis_t now_ms) {
     if (!config_changed_at) return;
     if ((millis_t)(now_ms - config_changed_at) < CONFIG_SAVE_DEBOUNCE_MS) return;
+    static bool deferred_logged = false;
+    if (motor) {
+        const config_persist::DriveState state{
+            .speed_target_m_s = motor->get_speed_target(),
+            .applied_target_m_s = motor->get_applied_speed_target(),
+            .linear_velocity_m_s = motor->get_linear_velocity(),
+        };
+        if (!config_persist::drive_idle(state)) {
+            if (!deferred_logged) {
+                deferred_logged = true;
+                serial_line_debug("eeprom: save deferred until the drive is idle");
+            }
+            return;
+        }
+    }
+    deferred_logged = false;
     config_changed_at = 0;
     save_stored_wheel_config();
 }
@@ -542,6 +591,11 @@ static void load_stored_wheel_config() {
         (void)apply_config_value(id, stored.values[id]);
     }
     config_changed_at = 0;  // restored, not an edit that needs writing back
+    // The restored values are what the record holds; a value the backend
+    // rejected keeps its default and is not rewritten at boot either.
+    for (int32_t id = 0; id < CFG_ID_COUNT; ++id) {
+        stored_values[id] = config_values[id];
+    }
     serial_line_debug("eeprom: wheel config restored");
 }
 
@@ -562,6 +616,9 @@ static void save_stored_wheel_config() {
     if (eeprom.write<StoredWheelConfig>(&stored, WHEEL_CONFIG_ADDRESS) != HAL_OK) {
         serial_line_debug("eeprom: write failed");
         return;
+    }
+    for (int32_t id = 0; id < CFG_ID_COUNT; ++id) {
+        stored_values[id] = config_values[id];
     }
     serial_line_debug("eeprom: wheel config saved");
 }
