@@ -91,6 +91,9 @@ struct Counters {
     volatile uint32_t phase_poll_max_us;
     volatile uint32_t phase_persist_max_us;
     volatile uint32_t phase_cyphal_max_us;
+    volatile uint32_t cyphal_transport_max_us;
+    volatile uint32_t cyphal_report_max_us;
+    volatile uint32_t cyphal_heartbeat_max_us;
     // Free-store use (App/heap_probe.h): the control loop must make none.
     volatile uint32_t heap_allocations;
     volatile uint32_t heap_hot_allocations;

@@ -8,6 +8,7 @@
 #include <voltbro/utils.hpp>
 
 #include "config_ids.h"
+#include <firmware_version.h>
 #include "loop_trace.h"
 #include "motor_backend.h"
 #include "usart.h"
@@ -294,6 +295,34 @@ void send_status(MotorBackend& motor) {    Line line;
     line_finish(line);
 }
 
+void send_info(MotorBackend& motor) {
+    {
+        Line line;
+        line_text(line, "I commit=");
+        line_text(line, VB_FIRMWARE_COMMIT);
+        line_text(line, " motor=");
+        line_text(line, motor.name());
+        line_finish(line);
+    }
+
+    Line line;
+    line_text(line, "I cfg");
+    static const ConfigId ids[] = {
+        CFG_WHEEL_DIAMETER, CFG_MAX_SPEED, CFG_PID_KP, CFG_PID_KI, CFG_PID_KD,
+    };
+    for (const ConfigId id : ids) {
+        float value = 0.0f;
+        if (!app_get_config(id, value)) {
+            continue;
+        }
+        line_text(line, " C");
+        line_unsigned(line, static_cast<unsigned long>(id));
+        line_text(line, "=");
+        line_fixed(line, value, 4);
+    }
+    line_finish(line);
+}
+
 void send_diagnostics(MotorBackend& motor) {
     MotorDiagnostics diagnostics;
     if (!motor.get_diagnostics(diagnostics)) {
@@ -433,6 +462,12 @@ void send_counters() {
         line_unsigned(line, counters.phase_persist_max_us);
         line_text(line, " cyphal=");
         line_unsigned(line, counters.phase_cyphal_max_us);
+        line_text(line, " can=");
+        line_unsigned(line, counters.cyphal_transport_max_us);
+        line_text(line, " report=");
+        line_unsigned(line, counters.cyphal_report_max_us);
+        line_text(line, " beat=");
+        line_unsigned(line, counters.cyphal_heartbeat_max_us);
         line_finish(line);
     }
 }
@@ -508,6 +543,7 @@ void send_help() {
         "# X         zero both set-points",
         "# M<rate>   telemetry rate in Hz, 0 = off",
         "# S         status line",
+        "# I         firmware commit, backend and basic config",
         "# V<0|1>    loop diagnostics (D line) with every status line",
         "# L<float>  velocity feedback low-pass, s (config id 12, persisted)",
         "# R<float>  wheel speed set-point ramp, m/s^2 (config id 13, persisted)",
@@ -756,6 +792,13 @@ void handle_command(const char* command, MotorBackend& motor) {
                 return;
             }
             send_status(motor);
+            return;
+        case 'I':
+            if (*argument != '\0') {
+                send_error(command);
+                return;
+            }
+            send_info(motor);
             return;
         case 'A':
             if (*argument != '\0') {

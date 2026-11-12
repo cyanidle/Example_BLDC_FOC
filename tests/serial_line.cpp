@@ -343,10 +343,25 @@ void test_errors(FakeMotor& motor) {
     CHECK(motor.target == target_before_errors);
 }
 
+void test_info(FakeMotor& motor) {
+    config_store[CFG_WHEEL_DIAMETER] = 0.32f;
+    config_store[CFG_MAX_SPEED] = 0.35f;
+    config_store[CFG_PID_KP] = 1.0f;
+    config_store[CFG_PID_KI] = 5.0f;
+    config_store[CFG_PID_KD] = 0.0f;
+    send(motor, "I\n");
+    CHECK(take_tx() ==
+        "I commit=host-test motor=fake\r\n"
+        "I cfg C0=0.3200 C16=0.3500 C1=1.0000 C2=5.0000 C3=0.0000\r\n");
+    send(motor, "I1\n");
+    CHECK(take_tx() == "ERR I1\r\n");
+}
+
 void test_help(FakeMotor& motor) {
     send(motor, "?\n");
     const std::string out = take_tx();
     CHECK(out.rfind("# T<float>", 0) == 0);
+    CHECK(out.find("\r\n# I ") != std::string::npos);
     CHECK(out.find("\r\n# ?") != std::string::npos);
 }
 
@@ -647,6 +662,7 @@ int main() {
     test_rx_error_discards_line(motor);
     test_config_command(motor);
     test_config_readback(motor);
+    test_info(motor);
     test_lpf_ramp_alias_config(motor);
     test_trace_counters_and_dump(motor);
     test_speed_path_is_sign_symmetric(motor);

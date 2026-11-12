@@ -20,6 +20,17 @@ message("Build type: " ${CMAKE_BUILD_TYPE})
 
 add_executable(vbcore)
 
+set(FIRMWARE_VERSION_HEADER "${CMAKE_CURRENT_BINARY_DIR}/generated/firmware_version.h")
+add_custom_target(firmware_version ALL
+    COMMAND "${CMAKE_COMMAND}"
+        -DSOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+        -DOUTPUT_FILE="${FIRMWARE_VERSION_HEADER}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/GenerateFirmwareVersion.cmake"
+    BYPRODUCTS "${FIRMWARE_VERSION_HEADER}"
+    COMMENT "Generating firmware commit identifier"
+)
+add_dependencies(vbcore firmware_version)
+
 add_subdirectory(cmake/stm32cubemx)
 
 file(GLOB_RECURSE DSP_SRC
@@ -93,6 +104,7 @@ target_compile_options(vbcore PRIVATE
 )
 
 target_include_directories(vbcore PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/generated"
     App
     Drivers/libcxxcanard
     # Order matters: generated DSDL headers do `#include <cyphal.h>`, which must

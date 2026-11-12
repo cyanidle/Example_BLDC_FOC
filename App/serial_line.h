@@ -53,11 +53,14 @@ class MotorBackend;
  *              (see App/config_ids.h / mods/config_defs.lua: 0 wheel diameter
  *              m, 1..3 velocity Kp/Ki/Kd, 4 integrator limit, 5..8
  *              overcurrent guard, 9..11 stall guard, 12 velocity LPF s,
- *              13 speed ramp m/s^2, 14 torque ramp A/s, 15 brake current A)
+ *              13 speed ramp m/s^2, 14 torque ramp A/s, 15 brake current A,
+ *              16 full-scale wheel speed m/s)
  *              -> C<id>=<value>; ERR when the id is unknown or the value is
  *              rejected (wrong range, or a knob the compiled backend lacks)
  *   G<id>      read a runtime config value back -> C<id>=<value> (the live
  *              value: compiled default, EEPROM record or last accepted write)
+ *   I          firmware and basic config     -> "I commit=<git-sha>[-dirty] motor=<backend>"
+ *              then "I cfg C0=<m> C16=<m/s> C1=<kp> C2=<ki> C3=<kd>"
  *   S          one status line now           -> S t=<-1..1> v=<rad/s> e=<0|1> f=<FAULT> [i=<A>]
  *              (`t` is the commanded normalized set-point — the module's
  *               commanded m/s over its full-scale speed, whatever source issued

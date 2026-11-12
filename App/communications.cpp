@@ -1,6 +1,7 @@
 #include "app.h"
 
 #include "fdcan.h"
+#include "loop_trace.h"
 
 #include <cyphal/node/node_info_handler.h>
 #include <cyphal/node/registers_handler.hpp>
@@ -26,6 +27,13 @@ static uint8_t CYPHAL_MODE = uavcan_node_Mode_1_0_INITIALIZATION;
 static std::shared_ptr<CyphalInterface> cyphal_interface;
 static bool _is_cyphal_on = false;
 static millis_t delay_cyphal_until_millis = 0;
+
+static void cyphal_phase_timing(volatile uint32_t& slot, micros_t start) {
+    const int64_t elapsed = subtract_64(micros_64(), start);
+    if (elapsed >= 0 && (uint32_t)elapsed > slot) {
+        slot = (uint32_t)elapsed;
+    }
+}
 
 #define DIP_PIN_INFO(ind)                                         \
     PinInfo {                                                     \
@@ -101,16 +109,23 @@ void heartbeat() {
 }
 
 void cyphal_loop() {
+    volatile loop_trace::Counters& counters = loop_trace::counters();
     if (_is_cyphal_on) {
+        const micros_t start = micros_64();
         cyphal_interface->loop();
+        cyphal_phase_timing(counters.cyphal_transport_max_us, start);
     }
     if (_is_cyphal_on) {
         millis_t current_t = millis_32();
+        micros_t start = micros_64();
         in_loop_reporting(current_t);
+        cyphal_phase_timing(counters.cyphal_report_max_us, start);
 
         static micros_t heartbeat_time = 0;
         if ((current_t - heartbeat_time) >= (1000)) {
+            start = micros_64();
             heartbeat();
+            cyphal_phase_timing(counters.cyphal_heartbeat_max_us, start);
             heartbeat_time = current_t;
         }
     }
