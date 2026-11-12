@@ -26,15 +26,13 @@ inline PIDConfig default_velocity_pid_config() {
         .min_output = -8.0f
     };
 #elif defined(VB_MOTOR_IMPL_SIMPLEFOC)
-    // Bench-tuned on this module (2026-11-11): 0.15 and 0.3 m/s in both
-    // directions track the wheel set-point to +-2% (0.939 vs 0.9375 rad/s at
-    // T0.15) with a 30% first-approach overshoot at the smallest step. The
-    // placeholders this replaced (kp 0.02, ki 0.5) left the loop winding up for
-    // seconds and overshooting by 1.8x. The units are wheel rad/s and amps:
+    // Bench-tuned on this module; also held the 18.5 V rail's full reachable
+    // rate (~2.2 wheel rad/s) in both directions on 2026-11-12. The units are
+    // wheel rad/s and amps:
     // the speed targets are wheel-side, the output is the q-current set-point.
     return PIDConfig {
-        .kp = 1.0f,               // A / (rad/s)
-        .ki = 5.0f,               // A / (rad/s * s)
+        .kp = 2.1f,               // A / (rad/s)
+        .ki = 1.11f,              // A / (rad/s * s)
         .kd = 0.0f,
         // Ignored by SimpleFOC's PID (it clamps the integral together with the
         // whole output by `limit`); kept for config-topic compatibility.
@@ -79,7 +77,7 @@ inline PIDConfig foc_current_pid_config() {
     };
 }
 
-constexpr float simplefoc_velocity_lpf_tf = 0.1f;  // s
+constexpr float simplefoc_velocity_lpf_tf = 0.05f;  // s
 // Rate estimate the Hall angle tracker free-runs on, s: the raw rate comes from
 // a single 2 ms Hall interval, so it is smoothed before it is integrated.
 constexpr float simplefoc_hall_rate_tau_s = 0.02f;
@@ -101,8 +99,11 @@ constexpr float simplefoc_hall_rate_plausible_multiple = 2.0f;
 // sector ahead of the previous one — that snap is structural, not saturation.
 constexpr float simplefoc_hall_angle_tau_s = 0.0008f;
 constexpr float simplefoc_pwm_frequency_hz = 25000.0f;
-constexpr float simplefoc_driver_voltage_limit_v = 19.0f;
-constexpr float simplefoc_motor_voltage_limit_v = 17.0f;
+// 60 V stays below the DRV8323's 65 V absolute-maximum PVDD rating. The 30 V
+// phase cap leaves room for 1 m/s on this wheel (25.6 V at the measured EMF
+// constant); below those ceilings the live bus remains the binding limit.
+constexpr float simplefoc_driver_voltage_limit_v = 60.0f;
+constexpr float simplefoc_motor_voltage_limit_v = 30.0f;
 // Fraction of the half-bus the q-voltage may use. Centered SinePWM turns a
 // q-voltage of half the bus into 100% duty on the peak phase, and the DRV8328
 // only refreshes that phase's bootstrap capacitor while its high side is off:
@@ -203,7 +204,7 @@ constexpr float simplefoc_torque_ramp_a_s = 50.0f;
 // the supply-derate block in update() catches the rail rise a small brake
 // still causes. 0 A makes a moving wheel coast. Runtime-tunable as config
 // id 15.
-constexpr float simplefoc_brake_current_a = 1.0f;
+constexpr float simplefoc_brake_current_a = 2.2f;
 // Voltage slew of the open-loop channel (serial Q / Cyphal 4050), V/s. A zero
 // command uses the gentler stop rate below; the asymmetric fast down-slew only
 // exists to shed an over-limit current.
@@ -222,15 +223,15 @@ constexpr float simplefoc_voltage_stop_ramp_v_s = 5.0f;
 
 // Overcurrent / stall protection over the common-mode-removed phase-current
 // magnitude (App/current_guard.h). The thresholds sit above the 8 A q-current
-// ceiling so a current-limited acceleration does not trip them; the windows
-// are short enough that a locked rotor parks the bridge before it heats.
+// ceiling so a current-limited acceleration does not trip them; the windows are
+// short enough that a locked rotor parks the bridge before it heats.
 constexpr float simplefoc_guard_lpf_tf_s = 0.005f;
 constexpr float simplefoc_oc_peak_a = 14.0f;
 constexpr uint32_t simplefoc_oc_peak_ms = 25;
 constexpr float simplefoc_oc_sustain_a = 10.0f;
 constexpr uint32_t simplefoc_oc_sustain_ms = 250;
 constexpr float simplefoc_stall_current_a = 2.0f;
-constexpr float simplefoc_stall_velocity_rad_s = 0.05f;
+constexpr float simplefoc_stall_velocity_rad_s = 0.11f;
 constexpr uint32_t simplefoc_stall_ms = 600;
 // How fast the open-loop channel's soft current ceiling falls while the
 // filtered current is over the limit, V/s; under 80% of the limit it recovers

@@ -103,9 +103,8 @@ constexpr float BOOT_WHEEL_RADIUS_M = 0.16f;
 
 // Boot-time full-scale speed of a normalized (-1..1) command, m/s, until the
 // backend reports what its rail can regulate and the EEPROM record overrides
-// it. Mirrors the façade's compiled default and mods/config_defs.lua's
-// max_speed default (0.25 m/s: the 18.5 V bench rail regulates 0.24 m/s).
-constexpr float BOOT_MAX_WHEEL_SPEED_M_S = 0.25f;
+// it. Mirrors mods/config_defs.lua's max_speed default.
+constexpr float BOOT_MAX_WHEEL_SPEED_M_S = 0.5f;
 
 // Default velocity-PID gains (see motor_tuning.h for the per-implementation
 // values). Overridden at run time by the config topic.
@@ -161,7 +160,7 @@ static void init_config_defaults() {
     config_values[CFG_STALL_MS] = (float)guard_config.stall_ms;
     config_values[CFG_VEL_LPF] = motor_tuning::simplefoc_velocity_lpf_tf;
     // Mirrors the MotorBackend façade's compiled speed-ramp default.
-    config_values[CFG_SPEED_RAMP] = 2.0f;
+    config_values[CFG_SPEED_RAMP] = 0.75f;
     config_values[CFG_TORQUE_RAMP] = motor_tuning::simplefoc_torque_ramp_a_s;
     config_values[CFG_BRAKE_CURRENT] = motor_tuning::simplefoc_brake_current_a;
     config_values[CFG_MAX_SPEED] = BOOT_MAX_WHEEL_SPEED_M_S;
@@ -231,8 +230,7 @@ void loop_phase_timing(LoopPhase phase, micros_t& mark) {
     const micros_t now = micros_64();
     const int64_t elapsed = subtract_64(now, mark);
     mark = now;
-    // The clock can step back ~1 ms across a millisecond boundary (see
-    // micros_64); a negative sample would pin the maximum forever, so drop it.
+    // A negative sample would pin the maximum forever, so drop it.
     if (elapsed < 0) {
         return;
     }

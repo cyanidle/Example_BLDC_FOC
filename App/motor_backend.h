@@ -324,7 +324,7 @@ private:
     // 2 m/s² reaches the cart's top speed in about a second: the six-step
     // watchdog needs the shaft to move within NO_PROGRESS_MS of a command, and a
     // friction-bound wheel does not move at all from a 1 V step.
-    float speed_ramp_m_s2 = 2.0f;
+    float speed_ramp_m_s2 = 0.75f;
 };
 
 std::unique_ptr<MotorBackend> make_motor_backend(
