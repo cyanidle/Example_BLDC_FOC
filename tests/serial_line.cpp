@@ -573,7 +573,7 @@ void test_speed_path_is_sign_symmetric(FakeMotor& motor) {
     // class of bug: same command magnitude, same ramp, same clamp, mirrored.
     motor.set_ceiling(1.0f);
     motor.set_max_speed(1.0f);   // full scale, so the ceiling is what clamps
-    motor.set_speed_ramp(2.0f);  // m/s^2, the façade default
+    motor.set_speed_ramp(2.0f);  // m/s^2, an arbitrary slope
 
     // Ramp transient: one 100 ms period at 2 m/s^2 = 0.2 m/s, both signs.
     for (float command : {0.6f, 0.2f}) {
