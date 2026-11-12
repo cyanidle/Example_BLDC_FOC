@@ -24,12 +24,19 @@ millis_t millis_32() {
 std::map<int32_t, float> config_store;
 bool config_apply_ok = true;
 
+// app.cpp applies the full-scale speed (id 16) to the façade; the stub does the
+// same, so the serial path can be tested end to end.
+MotorBackend* config_max_speed_motor = nullptr;
+
 bool app_apply_config(int32_t id, float value) {
     if (id < 0 || id >= CFG_ID_COUNT) return false;
     if (id == CFG_VEL_LPF && !(value >= 0.0f && value <= 1.0f)) return false;
     if (id == CFG_SPEED_RAMP && !(value > 0.0f && value <= 100.0f)) return false;
     if (id == CFG_MAX_SPEED && !(value > 0.0f && value <= 10.0f)) return false;
     if (!config_apply_ok) return false;
+    if (id == CFG_MAX_SPEED && config_max_speed_motor) {
+        config_max_speed_motor->set_max_speed(value);
+    }
     config_store[id] = value;
     return true;
 }
@@ -180,6 +187,39 @@ void test_setpoints(FakeMotor& motor) {
     // A non-positive or silly full scale is rejected like any other bad value.
     send(motor, "C16:0\n");
     CHECK(take_tx() == "ERR C16:0\r\n");
+}
+
+void test_full_scale_rescales_the_latched_target(FakeMotor& motor) {
+    // Command sources speak normalized (-1..1 of config id 16), so the physical
+    // target has to follow the full scale while the drive runs. Latched m/s at
+    // command time meant lowering the scale slowed nothing down until the
+    // source re-issued its command.
+    motor.set_speed_target(0.0f);
+    send(motor, "C16:0.5\n");
+    take_tx();
+    send(motor, "T0.4\n");
+    take_tx();
+    settle(motor);
+    CHECK(std::abs(motor.get_speed_target() - 0.2f) < 1e-6f);
+    CHECK(std::abs(motor.target - wheel_rad_s(0.2f)) < 1e-4f);
+
+    send(motor, "C16:0.25\n");
+    CHECK(take_tx() == "C16=0.250\r\n");
+    CHECK(std::abs(motor.get_speed_target() - 0.1f) < 1e-6f);
+    settle(motor);
+    CHECK(std::abs(motor.target - wheel_rad_s(0.1f)) < 1e-4f);
+
+    // A command that was given in m/s is not tied to the full scale: the
+    // façade keeps it, and a stop stays a stop.
+    motor.set_speed_target(0.15f);
+    send(motor, "C16:0.5\n");
+    take_tx();
+    CHECK(std::abs(motor.get_speed_target() - 0.15f) < 1e-6f);
+
+    motor.set_speed_target(0.0f);
+    send(motor, "C16:0.5\n");
+    take_tx();
+    CHECK(motor.get_speed_target() == 0.0f);
 }
 
 void test_speed_target_uses_wheel_radius(FakeMotor& motor) {
@@ -644,6 +684,8 @@ int main() {
     CHECK(take_tx() == "M=0\r\n");
 
     test_setpoints(motor);
+    config_max_speed_motor = &motor;
+    test_full_scale_rescales_the_latched_target(motor);
     test_speed_target_uses_wheel_radius(motor);
     test_enable(motor);
     test_zero(motor);

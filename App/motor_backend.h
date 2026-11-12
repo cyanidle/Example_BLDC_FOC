@@ -83,21 +83,14 @@ public:
     // Target wheel speed, m/s — the unit the backend works in. Command sources
     // (serial `T`, the cart runtime) send a NORMALIZED -1..1 set-point through
     // set_speed_target_normalized(); this form is for internal use (a stop, the
-    // tests). The façade ramps the value it actually applies towards this one
-    // (see apply_speed_ramp), so a step command cannot ask for an acceleration
-    // the drive cannot deliver; the six-step stall watchdog reads such a jump as
-    // a stalled start.
+    // tests) and supersedes a normalized command, so a later full-scale change
+    // cannot move a target that was given in m/s. The façade ramps the value it
+    // actually applies towards this one (see apply_speed_ramp), so a step
+    // command cannot ask for an acceleration the drive cannot deliver; the
+    // six-step stall watchdog reads such a jump as a stalled start.
     void set_speed_target(float linear_m_s) {
-        speed_target_m_s = linear_m_s;
-        if (linear_m_s == 0.0f) {
-            // A stop must not wait for the ramp. The regulator is cleared too:
-            // the loop is positional (its output is the voltage set-point), so
-            // an integral wound up while driving would push the wheel forward
-            // against the brake and the wheel would coast for seconds.
-            speed_applied_m_s = 0.0f;
-            set_wheel_speed_target(0.0f);
-            reset_speed_regulator();
-        }
+        normalized_target = std::numeric_limits<float>::quiet_NaN();
+        apply_target(linear_m_s);
     }
 
     // Normalized speed command, -1..1, scaled by the configured full-scale
@@ -106,14 +99,20 @@ public:
     // modulation ceiling), so a source cannot command a speed the drive has no
     // voltage to regulate. Out-of-range or non-finite commands are clamped.
     void set_speed_target_normalized(float command) {
-        const float normalized = std::isfinite(command) ? std::clamp(command, -1.0f, 1.0f) : 0.0f;
-        set_speed_target(normalized * max_speed_m_s);
+        normalized_target = std::isfinite(command) ? std::clamp(command, -1.0f, 1.0f) : 0.0f;
+        apply_target(normalized_target * max_speed_m_s);
     }
 
     // Full-scale wheel speed the -1..1 commands map onto, m/s (config id 16).
+    // A normalized command is a fraction of this scale, so changing it while
+    // the drive runs moves the latched target with it — otherwise the operator
+    // lowers the full scale and nothing slows down until the source re-issues
+    // its command.
     void set_max_speed(float m_s) {
-        if (std::isfinite(m_s) && m_s > 0.0f) {
-            max_speed_m_s = m_s;
+        if (!(std::isfinite(m_s) && m_s > 0.0f)) return;
+        max_speed_m_s = m_s;
+        if (std::isfinite(normalized_target)) {
+            apply_target(normalized_target * max_speed_m_s);
         }
     }
 
@@ -309,8 +308,26 @@ protected:
     virtual void reset_speed_regulator() = 0;
 
 private:
+    // Single place both command forms go through, so the immediate-stop rule
+    // cannot be bypassed by one of them.
+    void apply_target(float linear_m_s) {
+        speed_target_m_s = linear_m_s;
+        if (linear_m_s == 0.0f) {
+            // A stop must not wait for the ramp. The regulator is cleared too:
+            // the loop is positional (its output is the voltage set-point), so
+            // an integral wound up while driving would push the wheel forward
+            // against the brake and the wheel would coast for seconds.
+            speed_applied_m_s = 0.0f;
+            set_wheel_speed_target(0.0f);
+            reset_speed_regulator();
+        }
+    }
+
     float wheel_radius_m;
     float speed_target_m_s = 0.0f;   // commanded set-point, m/s
+    // Last normalized command, -1..1; NaN when the last command was given in
+    // m/s (then a full-scale change must not move it).
+    float normalized_target = std::numeric_limits<float>::quiet_NaN();
     float speed_applied_m_s = 0.0f;  // ramped set-point handed to the backend
     // Ceiling the backend reports (see get_speed_ceiling); the routed target is
     // clamped to it. Infinite until a backend says otherwise.
